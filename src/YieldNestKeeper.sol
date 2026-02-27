@@ -97,7 +97,11 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         IERC20(address(c.ynRWAx)).safeTransferFrom(c.approvedWallet, address(this), yieldInShares);
 
         // Step 5: Burn ynRWAx for underlying asset via withdrawAsset
-        uint256 assetsReceived = c.ynRWAx.withdrawAsset(yieldInShares);
+        address _asset = c.ynRWAx.asset();
+        uint256 assetsToWithdraw = c.ynRWAx.convertToAssets(yieldInShares);
+        uint256 balBefore = IERC20(_asset).balanceOf(address(this));
+        c.ynRWAx.withdrawAsset(_asset, assetsToWithdraw, address(this), address(this));
+        uint256 assetsReceived = IERC20(_asset).balanceOf(address(this)) - balBefore;
 
         // Step 6: Swap asset() for rewardAsset on Curve
         uint256 rewardOut = _swapAssetForReward(c, assetsReceived);

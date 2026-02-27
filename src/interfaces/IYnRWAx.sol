@@ -13,8 +13,13 @@ interface IYnRWAx is IERC20 {
     /// @notice Converts a given amount of assets to the equivalent amount of shares.
     function convertToShares(uint256 assets) external view returns (uint256 shares);
 
-    /// @notice Permissioned call to burn shares and withdraw the underlying asset.
-    /// @param amount The amount of shares to burn.
-    /// @return assets The amount of underlying assets received.
-    function withdrawAsset(uint256 amount) external returns (uint256 assets);
+    /// @notice Permissioned call to withdraw assets by burning the equivalent shares.
+    /// @param asset_ The address of the asset to withdraw.
+    /// @param assets The amount of assets to withdraw.
+    /// @param receiver The address that receives the withdrawn assets.
+    /// @param owner The address whose shares are burned.
+    /// @return shares The amount of shares burned.
+    function withdrawAsset(address asset_, uint256 assets, address receiver, address owner)
+        external
+        returns (uint256 shares);
 }

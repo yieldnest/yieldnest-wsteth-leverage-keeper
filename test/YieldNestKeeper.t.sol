@@ -31,12 +31,12 @@ contract MockYnRWAx is IERC20 {
         return (assets * 1e18) / rate;
     }
 
-    function withdrawAsset(uint256 amount) external returns (uint256) {
-        balanceOf[msg.sender] -= amount;
-        totalSupply -= amount;
-        uint256 assets = (amount * rate) / 1e18;
-        MockERC20(asset_).mint(msg.sender, assets);
-        return assets;
+    function withdrawAsset(address, uint256 assets, address receiver, address owner) external returns (uint256) {
+        uint256 shares = (assets * 1e18) / rate;
+        balanceOf[owner] -= shares;
+        totalSupply -= shares;
+        MockERC20(asset_).mint(receiver, assets);
+        return shares;
     }
 
     function mint(address to, uint256 amount) external {
