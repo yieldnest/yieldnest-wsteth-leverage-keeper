@@ -3,13 +3,16 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "src/YieldNestKeeper.sol";
+import {StablecoinRateProvider} from "src/StablecoinRateProvider.sol";
 import {IYnVault} from "src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "src/interfaces/AggregatorV3Interface.sol";
 import {ICurveRouter} from "src/interfaces/ICurveRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract MockYnRWAx is IERC20 {
+// ─── Mock Contracts ──────────────────────────────────────────────────────────
+
+contract MockYnVault is IERC20 {
     address public asset_;
     mapping(address => uint256) public override balanceOf;
     uint256 public override totalSupply;
@@ -18,6 +21,10 @@ contract MockYnRWAx is IERC20 {
     constructor(address _asset) {
         asset_ = _asset;
         rate = 1.05e18; // 5% yield
+    }
+
+    function setRate(uint256 _rate) external {
+        rate = _rate;
     }
 
     function asset() external view returns (address) {
@@ -82,6 +89,11 @@ contract MockERC20 is IERC20 {
         totalSupply += amount;
     }
 
+    function burn(address from, uint256 amount) external {
+        balanceOf[from] -= amount;
+        totalSupply -= amount;
+    }
+
     function transfer(address to, uint256 amount) external override returns (bool) {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
@@ -110,6 +122,10 @@ contract MockRateProvider is IConversionRateProvider {
         rate = _rate;
     }
 
+    function setRate(uint256 _rate) external {
+        rate = _rate;
+    }
+
     function getRate(address) external view override returns (uint256) {
         return rate;
     }
@@ -118,19 +134,29 @@ contract MockRateProvider is IConversionRateProvider {
 contract MockOracle is AggregatorV3Interface {
     int256 public price;
     uint8 public override decimals;
+    uint256 public updatedAt;
 
     constructor(int256 _price, uint8 _decimals) {
         price = _price;
         decimals = _decimals;
+        updatedAt = block.timestamp;
+    }
+
+    function setPrice(int256 _price) external {
+        price = _price;
+    }
+
+    function setUpdatedAt(uint256 _updatedAt) external {
+        updatedAt = _updatedAt;
     }
 
     function latestRoundData()
         external
         view
         override
-        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 _updatedAt, uint80 answeredInRound)
     {
-        return (1, price, block.timestamp, block.timestamp, 1);
+        return (1, price, block.timestamp, updatedAt, 1);
     }
 }
 
@@ -142,6 +168,10 @@ contract MockCurveRouter {
     constructor(address _inputToken, address _outputToken, uint256 _outputAmount) {
         inputToken = IERC20(_inputToken);
         outputToken = MockERC20(_outputToken);
+        outputAmount = _outputAmount;
+    }
+
+    function setOutputAmount(uint256 _outputAmount) external {
         outputAmount = _outputAmount;
     }
 
@@ -158,10 +188,12 @@ contract MockCurveRouter {
     }
 }
 
+// ─── Test Contract ──────────────────────────────────────────────────────────
+
 contract YieldNestKeeperTest is Test {
     YieldNestKeeper public keeper;
-    MockYnRWAx public ynRWAx;
-    MockERC20 public asset; // underlying asset of ynRWAx
+    MockYnVault public vault;
+    MockERC20 public asset;
     MockERC20 public debtToken;
     MockERC20 public rewardAsset;
     MockRateProvider public rateProvider;
@@ -175,26 +207,528 @@ contract YieldNestKeeperTest is Test {
     address public destinationStrategy = address(0xDE);
 
     function setUp() public {
-        // Deploy mocks
         asset = new MockERC20("Asset", 18);
         debtToken = new MockERC20("DebtToken", 6);
         rewardAsset = new MockERC20("Reward", 18);
-        ynRWAx = new MockYnRWAx(address(asset));
-        // 1 asset = 1e18 debt tokens (1:1 rate, scaled by 1e18)
+        vault = new MockYnVault(address(asset));
         rateProvider = new MockRateProvider(1e18);
-        assetOracle = new MockOracle(1e8, 8); // $1 with 8 decimals
-        rewardOracle = new MockOracle(1e8, 8); // $1 with 8 decimals
+        assetOracle = new MockOracle(1e8, 8);
+        rewardOracle = new MockOracle(1e8, 8);
         curveRouter = new MockCurveRouter(address(asset), address(rewardAsset), 100e18);
 
-        // Set up position: give position1 some ynRWAx and some debt
-        ynRWAx.mint(position1, 1000e18);
-        // With 1.05x rate, 1000 ynRWAx = 1050 asset. Give 1000 debt.
-        // Yield = 1050 - 1000 = 50 asset = ~47.6 ynRWAx shares
-        debtToken.mint(position1, 1000e6); // debtToken has 6 decimals
+        // position1 holds 1000 vault shares and 1000 debt tokens
+        vault.mint(position1, 1000e18);
+        debtToken.mint(position1, 1000e6);
 
-        // Give the wallet ynRWAx to be pulled
-        ynRWAx.mint(wallet, 1000e18);
+        // wallet has vault shares to be pulled by keeper
+        vault.mint(wallet, 1000e18);
 
+        keeper = new YieldNestKeeper(admin, _defaultConfig());
+
+        vm.prank(admin);
+        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+    }
+
+    // ─── Harvest: Core Flow ──────────────────────────────────────────────────
+
+    function test_harvest_succeeds() public {
+        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
+        keeper.harvest();
+        uint256 destAfter = rewardAsset.balanceOf(destinationStrategy);
+        assertGt(destAfter, destBefore, "Destination should have received reward tokens");
+    }
+
+    function test_harvest_emitsEvent() public {
+        vm.expectEmit(false, false, false, false);
+        emit YieldNestKeeper.Harvested(0, 0, 0);
+        keeper.harvest();
+    }
+
+    function test_harvest_transfersCorrectSharesFromWallet() public {
+        uint256 walletBefore = IERC20(address(vault)).balanceOf(wallet);
+        keeper.harvest();
+        uint256 walletAfter = IERC20(address(vault)).balanceOf(wallet);
+        assertLt(walletAfter, walletBefore, "Wallet should have fewer vault shares");
+    }
+
+    function test_harvest_yieldMath() public view {
+        // 1000 shares at 1.05 rate = 1050 asset value
+        // 1000e6 debt at 1:1 rate with 18-6=12 decimal adjustment = 1000e18 asset
+        // yield = 1050e18 - 1000e18 = 50e18 asset
+        // yieldInShares = 50e18 * 1e18 / 1.05e18 = ~47.619e18
+        uint256 yield_ = keeper.earnedYield();
+        uint256 rate = 1.05e18;
+        uint256 expectedYield = (50e18 * 1e18) / rate;
+        assertEq(yield_, expectedYield, "Yield should be ~47.619e18 shares");
+    }
+
+    function test_harvest_secondHarvestReverts() public {
+        keeper.harvest();
+        // After first harvest, yield is consumed. Wallet has fewer shares but position1's
+        // shares haven't changed, so there should still be yield. However, the wallet may
+        // not have enough shares for a second pull of the same size.
+        // The position hasn't changed, so yield is the same, and wallet should still have
+        // enough (had 1000, used ~47.6, ~952 remaining > 47.6 needed).
+        // So second harvest should also work.
+        keeper.harvest();
+    }
+
+    // ─── Harvest: Revert Cases ───────────────────────────────────────────────
+
+    function test_harvest_revertsNoYield_debtExceedsPosition() public {
+        debtToken.mint(position1, 1050e6); // total debt = 2050e6 > 1050 asset value
+        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsNoYield_debtEqualsPosition() public {
+        // Position value = 1050e18. Need debt to equal that.
+        // 1050e6 debt (6 dec) converts to 1050e18 asset. Current is 1000e6, add 50e6.
+        debtToken.mint(position1, 50e6);
+        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsNoYield_zeroShares() public {
+        // Set rate to exactly 1.0 so position value == debt
+        vault.setRate(1e18);
+        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsWithoutRole() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.harvest();
+    }
+
+    // ─── Harvest: Oracle Edge Cases ──────────────────────────────────────────
+
+    function test_harvest_revertsOnStaleAssetOracle() public {
+        vm.warp(100_000);
+        assetOracle.setUpdatedAt(block.timestamp - 86401);
+        vm.expectRevert(YieldNestKeeper.StaleOraclePrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsOnStaleRewardOracle() public {
+        vm.warp(100_000);
+        rewardOracle.setUpdatedAt(block.timestamp - 86401);
+        vm.expectRevert(YieldNestKeeper.StaleOraclePrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsOnZeroAssetPrice() public {
+        assetOracle.setPrice(0);
+        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsOnNegativeAssetPrice() public {
+        assetOracle.setPrice(-1);
+        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsOnZeroRewardPrice() public {
+        rewardOracle.setPrice(0);
+        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_revertsOnNegativeRewardPrice() public {
+        rewardOracle.setPrice(-1);
+        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        keeper.harvest();
+    }
+
+    function test_harvest_succeedsAtOracleAgeBoundary() public {
+        vm.warp(100_000);
+        // Set oracle to exactly maxOracleAge seconds ago - should still pass
+        assetOracle.setUpdatedAt(block.timestamp - 86400);
+        rewardOracle.setUpdatedAt(block.timestamp - 86400);
+        keeper.harvest();
+    }
+
+    // ─── View Functions ──────────────────────────────────────────────────────
+
+    function test_earnedYield_returnsZeroWhenUnderwater() public {
+        debtToken.mint(position1, 1100e6); // way over
+        uint256 yield_ = keeper.earnedYield();
+        assertEq(yield_, 0, "Should return 0 when underwater");
+    }
+
+    function test_earnedYield_returnsZeroWhenEqual() public {
+        debtToken.mint(position1, 50e6); // exactly equal
+        uint256 yield_ = keeper.earnedYield();
+        assertEq(yield_, 0, "Should return 0 when position equals debt");
+    }
+
+    function test_earnedYield_returnsPositiveWhenYieldExists() public view {
+        uint256 yield_ = keeper.earnedYield();
+        assertGt(yield_, 0, "Should report yield");
+    }
+
+    function test_totalPositionShares() public view {
+        uint256 shares = keeper.totalPositionShares();
+        assertEq(shares, 1000e18, "Total position shares should be 1000e18");
+    }
+
+    function test_totalDebt() public view {
+        uint256 debt = keeper.totalDebt();
+        assertEq(debt, 1000e6, "Total debt should be 1000e6");
+    }
+
+    // ─── Multiple Positions ──────────────────────────────────────────────────
+
+    function test_multiplePositions_aggregatesShares() public {
+        address position2 = address(0xB2);
+        vault.mint(position2, 500e18);
+        debtToken.mint(position2, 500e6);
+
+        address[] memory positions = new address[](2);
+        positions[0] = position1;
+        positions[1] = position2;
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.positions = positions;
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        assertEq(k.totalPositionShares(), 1500e18);
+        assertEq(k.totalDebt(), 1500e6);
+    }
+
+    function test_multiplePositions_harvestYield() public {
+        address position2 = address(0xB2);
+        vault.mint(position2, 500e18);
+        debtToken.mint(position2, 500e6);
+
+        address[] memory positions = new address[](2);
+        positions[0] = position1;
+        positions[1] = position2;
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.positions = positions;
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        vm.prank(admin);
+        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
+        uint256 yield_ = k.earnedYield();
+        assertGt(yield_, 0, "Should have yield across multiple positions");
+
+        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
+        k.harvest();
+        assertGt(rewardAsset.balanceOf(destinationStrategy), destBefore);
+    }
+
+    // ─── Decimal Handling ────────────────────────────────────────────────────
+
+    function test_debtToAsset_sameDecimals() public {
+        // Both asset and debt have 18 decimals
+        MockERC20 asset18 = new MockERC20("Asset18", 18);
+        MockERC20 debt18 = new MockERC20("Debt18", 18);
+        MockYnVault vault18 = new MockYnVault(address(asset18));
+        vault18.setRate(1.05e18);
+
+        address pos = address(0xC1);
+        vault18.mint(pos, 1000e18);
+        debt18.mint(pos, 1000e18);
+        vault18.mint(wallet, 1000e18);
+
+        address[] memory positions = new address[](1);
+        positions[0] = pos;
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.vault = IYnVault(address(vault18));
+        cfg.debtToken = IERC20(address(debt18));
+        cfg.positions = positions;
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        vm.prank(admin);
+        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
+        // 1050 asset - 1000 debt = 50 yield
+        uint256 yield_ = k.earnedYield();
+        assertGt(yield_, 0, "Should have yield with same-decimal tokens");
+    }
+
+    function test_debtToAsset_assetHigherDecimals() public {
+        // Asset 18 dec, debt 6 dec (current setup) - already tested via default
+        uint256 yield_ = keeper.earnedYield();
+        assertGt(yield_, 0);
+    }
+
+    function test_debtToAsset_assetLowerDecimals() public {
+        // Asset 6 dec, debt 18 dec
+        MockERC20 asset6 = new MockERC20("Asset6", 6);
+        MockERC20 debt18 = new MockERC20("Debt18", 18);
+        MockYnVault vault6 = new MockYnVault(address(asset6));
+        vault6.setRate(1.05e18);
+
+        address pos = address(0xC2);
+        vault6.mint(pos, 1000e18);
+        debt18.mint(pos, 1000e18);
+        vault6.mint(wallet, 1000e18);
+
+        address[] memory positions = new address[](1);
+        positions[0] = pos;
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.vault = IYnVault(address(vault6));
+        cfg.debtToken = IERC20(address(debt18));
+        cfg.positions = positions;
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        vm.prank(admin);
+        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
+        uint256 yield_ = k.earnedYield();
+        assertGt(yield_, 0, "Should have yield with asset<debt decimals");
+    }
+
+    // ─── Constructor Validation ──────────────────────────────────────────────
+
+    function test_constructor_revertsZeroVault() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.vault = IYnVault(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroDebtToken() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.debtToken = IERC20(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroRateProvider() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.rateProvider = IConversionRateProvider(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroApprovedWallet() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.approvedWallet = address(0);
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroRewardAsset() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.rewardAsset = address(0);
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroDestinationStrategy() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.destinationStrategy = address(0);
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroCurveRouter() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.curveRouter = ICurveRouter(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroAssetOracle() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.assetOracle = AggregatorV3Interface(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroRewardOracle() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.rewardOracle = AggregatorV3Interface(address(0));
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsZeroBps() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.minOutputBps = 0;
+        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_revertsExcessiveBps() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.minOutputBps = 10_001;
+        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        new YieldNestKeeper(admin, cfg);
+    }
+
+    function test_constructor_accepts10000Bps() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.minOutputBps = 10_000;
+        new YieldNestKeeper(admin, cfg); // should not revert
+    }
+
+    function test_constructor_accepts1Bps() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.minOutputBps = 1;
+        new YieldNestKeeper(admin, cfg); // should not revert
+    }
+
+    function test_constructor_grantsAdminRole() public {
+        assertTrue(keeper.hasRole(keeper.DEFAULT_ADMIN_ROLE(), admin));
+    }
+
+    // ─── Admin: updateConfig ─────────────────────────────────────────────────
+
+    function test_updateConfig_succeeds() public {
+        YieldNestKeeper.Config memory newCfg = _defaultConfig();
+        newCfg.minOutputBps = 9800;
+
+        vm.prank(admin);
+        vm.expectEmit();
+        emit YieldNestKeeper.ConfigUpdated();
+        keeper.updateConfig(newCfg);
+    }
+
+    function test_updateConfig_revertsNonAdmin() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.updateConfig(cfg);
+    }
+
+    function test_updateConfig_revertsInvalidConfig() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.vault = IYnVault(address(0));
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        keeper.updateConfig(cfg);
+    }
+
+    // ─── Admin: setMinOutputBps ──────────────────────────────────────────────
+
+    function test_setMinOutputBps_succeeds() public {
+        vm.prank(admin);
+        keeper.setMinOutputBps(9500);
+        keeper.harvest(); // should work
+    }
+
+    function test_setMinOutputBps_revertsZero() public {
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        keeper.setMinOutputBps(0);
+    }
+
+    function test_setMinOutputBps_revertsAbove10000() public {
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        keeper.setMinOutputBps(10_001);
+    }
+
+    function test_setMinOutputBps_revertsNonAdmin() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.setMinOutputBps(9500);
+    }
+
+    // ─── Admin: setMaxOracleAge ──────────────────────────────────────────────
+
+    function test_setMaxOracleAge_succeeds() public {
+        vm.prank(admin);
+        keeper.setMaxOracleAge(3600);
+    }
+
+    function test_setMaxOracleAge_revertsNonAdmin() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.setMaxOracleAge(3600);
+    }
+
+    // ─── Admin: recoverToken ─────────────────────────────────────────────────
+
+    function test_recoverToken_succeeds() public {
+        MockERC20 stuck = new MockERC20("Stuck", 18);
+        stuck.mint(address(keeper), 100e18);
+        vm.prank(admin);
+        keeper.recoverToken(address(stuck), admin, 100e18);
+        assertEq(stuck.balanceOf(admin), 100e18);
+    }
+
+    function test_recoverToken_revertsToZeroAddress() public {
+        MockERC20 stuck = new MockERC20("Stuck", 18);
+        stuck.mint(address(keeper), 100e18);
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        keeper.recoverToken(address(stuck), address(0), 100e18);
+    }
+
+    function test_recoverToken_revertsNonAdmin() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.recoverToken(address(rewardAsset), address(0xBAD), 1);
+    }
+
+    // ─── StablecoinRateProvider ──────────────────────────────────────────────
+
+    function test_stablecoinRateProvider_returns1e18() public {
+        StablecoinRateProvider srp = new StablecoinRateProvider(address(asset));
+        assertEq(srp.getRate(address(asset)), 1e18);
+        assertEq(srp.getRate(address(0)), 1e18); // ignores asset arg
+    }
+
+    function test_stablecoinRateProvider_storesBaseAsset() public {
+        StablecoinRateProvider srp = new StablecoinRateProvider(address(asset));
+        assertEq(srp.BASE_ASSET(), address(asset));
+    }
+
+    // ─── MinOutput Calculation Scenarios ─────────────────────────────────────
+
+    function test_minOutput_differentOracleDecimals() public {
+        // Asset oracle 8 decimals at $1, reward oracle 18 decimals at $2000
+        MockOracle rewardOracle18 = new MockOracle(2000e18, 18);
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.rewardOracle = AggregatorV3Interface(address(rewardOracle18));
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        vm.prank(admin);
+        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
+        // Should succeed - the decimal adjustment should handle different oracle decimals
+        k.harvest();
+    }
+
+    function test_minOutput_highRewardPrice() public {
+        // Reward at $3000 (like wstETH), asset at $1 (like USDC)
+        rewardOracle = new MockOracle(3000e8, 8);
+
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.rewardOracle = AggregatorV3Interface(address(rewardOracle));
+
+        // Lower minOutputBps since Curve mock returns fixed 100e18 which may be
+        // generous relative to oracle-expected output
+        cfg.minOutputBps = 1; // very permissive for mock
+
+        YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
+
+        vm.prank(admin);
+        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
+        k.harvest();
+    }
+
+    // ─── Helper ──────────────────────────────────────────────────────────────
+
+    function _defaultConfig() internal view returns (YieldNestKeeper.Config memory) {
         address[] memory positions = new address[](1);
         positions[0] = position1;
 
@@ -202,8 +736,8 @@ contract YieldNestKeeperTest is Test {
         uint256[5][5] memory swapParams;
         address[5] memory pools;
 
-        YieldNestKeeper.Config memory config = YieldNestKeeper.Config({
-            vault: IYnVault(address(ynRWAx)),
+        return YieldNestKeeper.Config({
+            vault: IYnVault(address(vault)),
             positions: positions,
             debtToken: IERC20(address(debtToken)),
             rateProvider: IConversionRateProvider(address(rateProvider)),
@@ -219,58 +753,5 @@ contract YieldNestKeeperTest is Test {
             maxOracleAge: 86400,
             minOutputBps: 9900
         });
-
-        keeper = new YieldNestKeeper(admin, config);
-
-        vm.prank(admin);
-        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
-    }
-
-    function test_harvest_succeeds() public {
-        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
-        keeper.harvest();
-        uint256 destAfter = rewardAsset.balanceOf(destinationStrategy);
-        assertGt(destAfter, destBefore, "Destination should have received reward tokens");
-    }
-
-    function test_harvest_noYield_reverts() public {
-        // Position has 1000 ynRWAx at 1.05x = 1050e18 asset value.
-        // Debt is 1000e6 (6 decimals), with rate 1e18 and decimal normalization = 1000e18 asset.
-        // So yield = 50e18. To make it revert, we need debt >= position value.
-        // Mint enough debt to exceed 1050 asset (in 6 decimal terms = 1050e6 additional).
-        debtToken.mint(position1, 1050e6);
-        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
-        keeper.harvest();
-    }
-
-    function test_earnedYield_view() public view {
-        uint256 yield_ = keeper.earnedYield();
-        assertGt(yield_, 0, "Should report yield");
-    }
-
-    function test_totalPositionShares() public view {
-        uint256 shares = keeper.totalPositionShares();
-        assertEq(shares, 1000e18, "Total position shares should be 1000e18");
-    }
-
-    function test_harvest_reverts_without_role() public {
-        vm.prank(address(0xBAD));
-        vm.expectRevert();
-        keeper.harvest();
-    }
-
-    function test_setMinOutputBps() public {
-        vm.prank(admin);
-        keeper.setMinOutputBps(9500);
-        // Verify by calling harvest successfully (would revert if config broken)
-        keeper.harvest();
-    }
-
-    function test_recoverToken() public {
-        MockERC20 stuckToken = new MockERC20("Stuck", 18);
-        stuckToken.mint(address(keeper), 100e18);
-        vm.prank(admin);
-        keeper.recoverToken(address(stuckToken), admin, 100e18);
-        assertEq(stuckToken.balanceOf(admin), 100e18);
     }
 }

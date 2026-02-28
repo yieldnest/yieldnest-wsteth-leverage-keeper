@@ -279,6 +279,46 @@ contract YieldNestKeeperMainnetTest is Test {
         keeper.setMaxOracleAge(3600);
     }
 
+    // ─── Double Harvest ────────────────────────────────────────────────────
+
+    function test_harvestWithYield_secondHarvestHasReducedYield() public {
+        _setupHarvestableYield();
+
+        uint256 yieldBefore = keeper.earnedYield();
+        assertGt(yieldBefore, 0);
+
+        keeper.harvest();
+
+        // After first harvest, the safe has fewer ynRWAx shares (yield was pulled).
+        // Position value decreases while mocked debt stays the same, so yield should decrease.
+        uint256 yieldAfter = keeper.earnedYield();
+        assertLt(yieldAfter, yieldBefore, "Yield should decrease after harvest");
+        console2.log("Yield before:", yieldBefore, "Yield after:", yieldAfter);
+    }
+
+    // ─── UpdateConfig on mainnet ─────────────────────────────────────────────
+
+    function test_updateConfig_maintainsHarvestability() public {
+        _setupHarvestableYield();
+
+        // Update config with higher slippage tolerance
+        YieldNestKeeper.Config memory cfg = _buildConfig();
+        cfg.minOutputBps = 9000;
+        vm.prank(admin);
+        keeper.updateConfig(cfg);
+
+        // Should still be able to harvest
+        keeper.harvest();
+    }
+
+    // ─── Vault Token Decimals ────────────────────────────────────────────────
+
+    function test_tokenDecimals_areCorrect() public view {
+        assertEq(IERC20Metadata(USDC).decimals(), 6, "USDC should have 6 decimals");
+        assertEq(IERC20Metadata(WSTETH).decimals(), 18, "wstETH should have 18 decimals");
+        assertEq(IERC20Metadata(VARIABLE_DEBT_USDE).decimals(), 18, "variableDebtUSDe should have 18 decimals");
+    }
+
     // ─── Helpers ────────────────────────────────────────────────────────────────
 
     function _buildConfig() internal view returns (YieldNestKeeper.Config memory) {
