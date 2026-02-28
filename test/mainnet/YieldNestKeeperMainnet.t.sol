@@ -72,7 +72,7 @@ contract YieldNestKeeperMainnetTest is Test {
     address admin = makeAddr("admin");
 
     function setUp() public {
-        vm.createSelectFork(vm.envString("ETH_RPC_URL"));
+        // Fork is configured via [profile.mainnet] eth_rpc_url in foundry.toml
 
         // Deploy mock rate provider: 1e18 = 1:1 USDC/USDe value peg
         rateProvider = new MockRateProvider(1e18);

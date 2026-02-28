@@ -12,6 +12,10 @@ remappings = [
 
 [profile.mainnet]
 test = "test/mainnet"
+eth_rpc_url = "eth_mainnet"
 
 [profile.default.fmt]
 line_length = 120
+
+[rpc_endpoints]
+eth_mainnet = "${ETH_RPC_URL}"
