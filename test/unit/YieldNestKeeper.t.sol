@@ -220,6 +220,9 @@ contract YieldNestKeeperTest is Test {
         });
 
         keeper = new YieldNestKeeper(admin, config);
+
+        vm.prank(admin);
+        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
     }
 
     function test_harvest_succeeds() public {
@@ -249,20 +252,9 @@ contract YieldNestKeeperTest is Test {
         assertEq(shares, 1000e18, "Total position shares should be 1000e18");
     }
 
-    function test_harvest_restricted_when_role_assigned() public {
-        address harvester = address(0xA2);
-        bytes32 harvesterRole = keeper.HARVESTER_ROLE();
-
-        vm.prank(admin);
-        keeper.grantRole(harvesterRole, harvester);
-
-        // Non-harvester should revert
+    function test_harvest_reverts_without_role() public {
         vm.prank(address(0xBAD));
         vm.expectRevert();
-        keeper.harvest();
-
-        // Harvester should succeed
-        vm.prank(harvester);
         keeper.harvest();
     }
 

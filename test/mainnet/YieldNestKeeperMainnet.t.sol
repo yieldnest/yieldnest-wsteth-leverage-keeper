@@ -88,6 +88,10 @@ contract YieldNestKeeperMainnetTest is Test {
         vm.prank(SAFE);
         IERC20(YNRWAX).approve(address(keeper), type(uint256).max);
 
+        // Grant HARVESTER_ROLE to the test contract
+        vm.prank(admin);
+        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
+
         // Mock wstETH/USD oracle: the BGD adapter returns updatedAt=0 from latestRoundData
         _mockWstethOracle();
     }
@@ -193,24 +197,10 @@ contract YieldNestKeeperMainnetTest is Test {
         keeper.harvest();
     }
 
-    function test_harvestRestrictedWhenRoleAssigned() public {
-        address harvester = makeAddr("harvester");
-        bytes32 harvesterRole = keeper.HARVESTER_ROLE();
-
-        vm.prank(admin);
-        keeper.grantRole(harvesterRole, harvester);
-
-        // Non-harvester should revert
+    function test_harvestRevertsWithoutRole() public {
         vm.prank(makeAddr("random"));
         vm.expectRevert();
         keeper.harvest();
-
-        // Harvester should succeed (if yield > 0)
-        uint256 yield_ = keeper.earnedYield();
-        if (yield_ > 0) {
-            vm.prank(harvester);
-            keeper.harvest();
-        }
     }
 
     // ─── Harvest Tests (with yield setup) ───────────────────────────────────────

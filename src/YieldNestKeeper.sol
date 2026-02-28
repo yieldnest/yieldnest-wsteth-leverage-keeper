@@ -71,12 +71,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     /// @notice Parameterless harvest function. Computes earned yield, pulls vault shares from the
     ///         approved wallet, burns it for asset(), swaps asset() for rewardAsset on Curve,
     ///         and sends the reward to the destination strategy.
-    function harvest() external nonReentrant {
-        // Permissioning: if HARVESTER_ROLE members exist, restrict to them; otherwise permissionless
-        if (getRoleMemberCount(HARVESTER_ROLE) > 0) {
-            _checkRole(HARVESTER_ROLE, msg.sender);
-        }
-
+    function harvest() external nonReentrant onlyRole(HARVESTER_ROLE) {
         Config memory c = config;
 
         // Step 1: Calculate total position value in asset terms
