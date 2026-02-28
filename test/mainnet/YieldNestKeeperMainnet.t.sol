@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test, console2} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
 import {IYnVault} from "../../src/interfaces/IYnVault.sol";
-import {IConversionRateProvider} from "../../src/interfaces/IConversionRateProvider.sol";
+import {StablecoinRateProvider} from "../../src/StablecoinRateProvider.sol";
 import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -12,20 +12,6 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 interface IAccessControl {
     function grantRole(bytes32 role, address account) external;
     function hasRole(bytes32 role, address account) external view returns (bool);
-}
-
-/// @dev Simple rate provider for USDC/USDe peg. The on-chain rate provider from the strategy
-///      deployment has a different interface (getRate(address) instead of getRate()).
-contract MockRateProvider is IConversionRateProvider {
-    uint256 public immutable rate;
-
-    constructor(uint256 _rate) {
-        rate = _rate;
-    }
-
-    function getRate() external view override returns (uint256) {
-        return rate;
-    }
 }
 
 contract YieldNestKeeperMainnetTest is Test {
@@ -68,14 +54,14 @@ contract YieldNestKeeperMainnetTest is Test {
     // ─── Test State ─────────────────────────────────────────────────────────────
 
     YieldNestKeeper keeper;
-    MockRateProvider rateProvider;
+    StablecoinRateProvider rateProvider;
     address admin = makeAddr("admin");
 
     function setUp() public {
         // Fork is configured via [profile.mainnet] eth_rpc_url in foundry.toml
 
-        // Deploy mock rate provider: 1e18 = 1:1 USDC/USDe value peg
-        rateProvider = new MockRateProvider(1e18);
+        // 1:1 USDC/USDe stablecoin peg
+        rateProvider = new StablecoinRateProvider(USDC);
 
         // Deploy keeper with mainnet config
         keeper = new YieldNestKeeper(admin, _buildConfig());
@@ -304,7 +290,7 @@ contract YieldNestKeeperMainnetTest is Test {
             vault: IYnVault(YNRWAX),
             positions: positions,
             debtToken: IERC20(VARIABLE_DEBT_USDE),
-            rateProvider: IConversionRateProvider(address(rateProvider)),
+            rateProvider: rateProvider,
             approvedWallet: SAFE,
             rewardAsset: WSTETH,
             destinationStrategy: STRATEGY,

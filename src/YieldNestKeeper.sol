@@ -183,8 +183,8 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     ///      So: debtInAsset_native = debtAmount_native * 1e18 / rate,
     ///      then normalize decimals: multiply by 10^(assetDecimals - debtDecimals) if needed.
     function _debtToAsset(Config memory c, uint256 debtAmount) internal view returns (uint256) {
-        uint256 rate = c.rateProvider.getRate();
         address asset = c.vault.asset();
+        uint256 rate = c.rateProvider.getRate(asset);
         uint8 assetDecimals = IERC20Metadata(asset).decimals();
         uint8 debtDecimals = IERC20Metadata(address(c.debtToken)).decimals();
 

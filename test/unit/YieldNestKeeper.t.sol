@@ -109,7 +109,7 @@ contract MockRateProvider is IConversionRateProvider {
         rate = _rate;
     }
 
-    function getRate() external view override returns (uint256) {
+    function getRate(address) external view override returns (uint256) {
         return rate;
     }
 }
