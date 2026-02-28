@@ -9,6 +9,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IYnVault} from "./interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "./interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {ICurveRouter} from "./interfaces/ICurveRouter.sol";
 
 /// @title YieldNestKeeper
 /// @notice Harvests earned yield from vault positions by comparing vault share value against debt,
@@ -31,7 +32,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         address rewardAsset; // Token to swap asset() into on Curve
         address destinationStrategy; // Where reward tokens are sent
         // Curve swap config
-        address curveRouter; // Curve Router address
+        ICurveRouter curveRouter; // Curve Router
         address[11] route; // Curve swap route
         uint256[5][5] swapParams; // Curve swap params
         address[5] pools; // Curve pools for swap
@@ -198,22 +199,11 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
 
     function _swapAssetForReward(Config memory c, uint256 amount) internal returns (uint256) {
         address asset = c.vault.asset();
-        IERC20(asset).forceApprove(c.curveRouter, amount);
+        IERC20(asset).forceApprove(address(c.curveRouter), amount);
 
         uint256 minOut = _calculateMinOutput(c, amount);
 
-        (bool success, bytes memory result) = c.curveRouter.call(
-            abi.encodeWithSignature(
-                "exchange(address[11],uint256[5][5],uint256,uint256,address[5])",
-                c.route,
-                c.swapParams,
-                amount,
-                minOut,
-                c.pools
-            )
-        );
-        if (!success) revert CurveSwapFailed();
-        return abi.decode(result, (uint256));
+        return c.curveRouter.exchange(c.route, c.swapParams, amount, minOut, c.pools);
     }
 
     function _calculateMinOutput(Config memory c, uint256 inputAmount) internal view returns (uint256) {
@@ -245,7 +235,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         if (c.approvedWallet == address(0)) revert ZeroAddress();
         if (c.rewardAsset == address(0)) revert ZeroAddress();
         if (c.destinationStrategy == address(0)) revert ZeroAddress();
-        if (c.curveRouter == address(0)) revert ZeroAddress();
+        if (address(c.curveRouter) == address(0)) revert ZeroAddress();
         if (address(c.assetOracle) == address(0)) revert ZeroAddress();
         if (address(c.rewardOracle) == address(0)) revert ZeroAddress();
         if (c.minOutputBps == 0 || c.minOutputBps > 10_000) revert InvalidBps();

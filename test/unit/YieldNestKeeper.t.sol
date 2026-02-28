@@ -6,6 +6,7 @@ import {YieldNestKeeper} from "src/YieldNestKeeper.sol";
 import {IYnVault} from "src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "src/interfaces/AggregatorV3Interface.sol";
+import {ICurveRouter} from "src/interfaces/ICurveRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract MockYnRWAx is IERC20 {
@@ -209,7 +210,7 @@ contract YieldNestKeeperTest is Test {
             approvedWallet: wallet,
             rewardAsset: address(rewardAsset),
             destinationStrategy: destinationStrategy,
-            curveRouter: address(curveRouter),
+            curveRouter: ICurveRouter(address(curveRouter)),
             route: route,
             swapParams: swapParams,
             pools: pools,

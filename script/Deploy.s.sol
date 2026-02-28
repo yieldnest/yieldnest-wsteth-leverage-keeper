@@ -6,6 +6,7 @@ import {YieldNestKeeper} from "../src/YieldNestKeeper.sol";
 import {IYnVault} from "../src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "../src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
+import {ICurveRouter} from "../src/interfaces/ICurveRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract DeployScript is Script {
@@ -30,7 +31,7 @@ contract DeployScript is Script {
             approvedWallet: address(0), // TODO
             rewardAsset: address(0), // TODO
             destinationStrategy: address(0), // TODO
-            curveRouter: address(0), // TODO
+            curveRouter: ICurveRouter(address(0)), // TODO
             route: route,
             swapParams: swapParams,
             pools: pools,
