@@ -6,12 +6,12 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IYnRWAx} from "./interfaces/IYnRWAx.sol";
+import {IYnVault} from "./interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "./interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 
 /// @title YieldNestKeeper
-/// @notice Harvests earned yield from ynRWAx positions by comparing ynRWAx value against debt,
+/// @notice Harvests earned yield from vault positions by comparing vault share value against debt,
 ///         withdrawing the surplus, swapping the underlying asset for a reward token on Curve,
 ///         and forwarding the reward to a destination strategy.
 contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
@@ -23,11 +23,11 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     // ─── Configuration ────────────────────────────────────────────────────────────
 
     struct Config {
-        IYnRWAx ynRWAx; // The ynRWAx vault token
-        address[] positions; // Addresses whose ynRWAx balances constitute the managed position
+        IYnVault vault; // The YieldNest vault token
+        address[] positions; // Addresses whose vault share balances constitute the managed position
         IERC20 debtToken; // The debt token (1:1 with stablecoin)
         IConversionRateProvider rateProvider; // Provides asset() <-> debtToken conversion rate
-        address approvedWallet; // Wallet that pre-approved this keeper to pull ynRWAx
+        address approvedWallet; // Wallet that pre-approved this keeper to pull vault shares
         address rewardAsset; // Token to swap asset() into on Curve
         address destinationStrategy; // Where reward tokens are sent
         // Curve swap config
@@ -68,7 +68,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
 
     // ─── Public Entry Point ───────────────────────────────────────────────────────
 
-    /// @notice Parameterless harvest function. Computes earned yield, pulls ynRWAx from the
+    /// @notice Parameterless harvest function. Computes earned yield, pulls vault shares from the
     ///         approved wallet, burns it for asset(), swaps asset() for rewardAsset on Curve,
     ///         and sends the reward to the destination strategy.
     function harvest() external nonReentrant {
@@ -79,28 +79,28 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
 
         Config memory c = config;
 
-        // Step 1: Calculate total ynRWAx position value in asset terms
+        // Step 1: Calculate total position value in asset terms
         uint256 totalShares = _totalPositionShares(c);
-        uint256 positionValueInAsset = c.ynRWAx.convertToAssets(totalShares);
+        uint256 positionValueInAsset = c.vault.convertToAssets(totalShares);
 
         // Step 2: Calculate total debt in asset terms
         uint256 totalDebtAmount = _totalDebt(c);
         uint256 debtInAsset = _debtToAsset(c, totalDebtAmount);
 
-        // Step 3: Calculate yield surplus (in asset terms), then convert to ynRWAx shares
+        // Step 3: Calculate yield surplus (in asset terms), then convert to vault shares
         if (positionValueInAsset <= debtInAsset) revert NoYieldToHarvest();
         uint256 yieldInAsset = positionValueInAsset - debtInAsset;
-        uint256 yieldInShares = c.ynRWAx.convertToShares(yieldInAsset);
+        uint256 yieldInShares = c.vault.convertToShares(yieldInAsset);
         if (yieldInShares == 0) revert NoYieldToHarvest();
 
-        // Step 4: Pull ynRWAx from the approved wallet
-        IERC20(address(c.ynRWAx)).safeTransferFrom(c.approvedWallet, address(this), yieldInShares);
+        // Step 4: Pull vault shares from the approved wallet
+        IERC20(address(c.vault)).safeTransferFrom(c.approvedWallet, address(this), yieldInShares);
 
-        // Step 5: Burn ynRWAx for underlying asset via withdrawAsset
-        address _asset = c.ynRWAx.asset();
-        uint256 assetsToWithdraw = c.ynRWAx.convertToAssets(yieldInShares);
+        // Step 5: Burn vault shares for underlying asset via withdrawAsset
+        address _asset = c.vault.asset();
+        uint256 assetsToWithdraw = c.vault.convertToAssets(yieldInShares);
         uint256 balBefore = IERC20(_asset).balanceOf(address(this));
-        c.ynRWAx.withdrawAsset(_asset, assetsToWithdraw, address(this), address(this));
+        c.vault.withdrawAsset(_asset, assetsToWithdraw, address(this), address(this));
         uint256 assetsReceived = IERC20(_asset).balanceOf(address(this)) - balBefore;
 
         // Step 6: Swap asset() for rewardAsset on Curve
@@ -137,7 +137,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
 
     // ─── View Functions ───────────────────────────────────────────────────────────
 
-    /// @notice Returns the total ynRWAx shares across all managed positions.
+    /// @notice Returns the total vault shares across all managed positions.
     function totalPositionShares() external view returns (uint256) {
         return _totalPositionShares(config);
     }
@@ -147,17 +147,17 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         return _totalDebt(config);
     }
 
-    /// @notice Returns the current earned yield in ynRWAx shares, or 0 if underwater.
+    /// @notice Returns the current earned yield in vault shares, or 0 if underwater.
     function earnedYield() external view returns (uint256 yieldInShares) {
         Config memory c = config;
         uint256 totalSharesVal = _totalPositionShares(c);
-        uint256 positionValueInAsset = c.ynRWAx.convertToAssets(totalSharesVal);
+        uint256 positionValueInAsset = c.vault.convertToAssets(totalSharesVal);
         uint256 totalDebtVal = _totalDebt(c);
         uint256 debtInAsset = _debtToAsset(c, totalDebtVal);
 
         if (positionValueInAsset > debtInAsset) {
             uint256 yieldInAsset = positionValueInAsset - debtInAsset;
-            yieldInShares = c.ynRWAx.convertToShares(yieldInAsset);
+            yieldInShares = c.vault.convertToShares(yieldInAsset);
         }
     }
 
@@ -166,7 +166,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     function _totalPositionShares(Config memory c) internal view returns (uint256 total) {
         uint256 len = c.positions.length;
         for (uint256 i; i < len;) {
-            total += IERC20(address(c.ynRWAx)).balanceOf(c.positions[i]);
+            total += IERC20(address(c.vault)).balanceOf(c.positions[i]);
             unchecked {
                 ++i;
             }
@@ -189,7 +189,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     ///      then normalize decimals: multiply by 10^(assetDecimals - debtDecimals) if needed.
     function _debtToAsset(Config memory c, uint256 debtAmount) internal view returns (uint256) {
         uint256 rate = c.rateProvider.getRate();
-        address asset = c.ynRWAx.asset();
+        address asset = c.vault.asset();
         uint8 assetDecimals = IERC20Metadata(asset).decimals();
         uint8 debtDecimals = IERC20Metadata(address(c.debtToken)).decimals();
 
@@ -202,7 +202,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     }
 
     function _swapAssetForReward(Config memory c, uint256 amount) internal returns (uint256) {
-        address asset = c.ynRWAx.asset();
+        address asset = c.vault.asset();
         IERC20(asset).forceApprove(c.curveRouter, amount);
 
         uint256 minOut = _calculateMinOutput(c, amount);
@@ -232,7 +232,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         uint8 assetOracleDecimals = c.assetOracle.decimals();
         uint8 rewardOracleDecimals = c.rewardOracle.decimals();
 
-        address asset = c.ynRWAx.asset();
+        address asset = c.vault.asset();
         uint8 assetDecimals = IERC20Metadata(asset).decimals();
         uint8 rewardDecimals = IERC20Metadata(c.rewardAsset).decimals();
 
@@ -244,7 +244,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     }
 
     function _validateConfig(Config memory c) internal pure {
-        if (address(c.ynRWAx) == address(0)) revert ZeroAddress();
+        if (address(c.vault) == address(0)) revert ZeroAddress();
         if (address(c.debtToken) == address(0)) revert ZeroAddress();
         if (address(c.rateProvider) == address(0)) revert ZeroAddress();
         if (c.approvedWallet == address(0)) revert ZeroAddress();

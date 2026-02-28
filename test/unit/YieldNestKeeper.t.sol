@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "src/YieldNestKeeper.sol";
-import {IYnRWAx} from "src/interfaces/IYnRWAx.sol";
+import {IYnVault} from "src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -202,7 +202,7 @@ contract YieldNestKeeperTest is Test {
         address[5] memory pools;
 
         YieldNestKeeper.Config memory config = YieldNestKeeper.Config({
-            ynRWAx: IYnRWAx(address(ynRWAx)),
+            vault: IYnVault(address(ynRWAx)),
             positions: positions,
             debtToken: IERC20(address(debtToken)),
             rateProvider: IConversionRateProvider(address(rateProvider)),

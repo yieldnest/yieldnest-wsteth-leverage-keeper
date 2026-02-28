@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
-import {IYnRWAx} from "../../src/interfaces/IYnRWAx.sol";
+import {IYnVault} from "../../src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "../../src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -95,7 +95,7 @@ contract YieldNestKeeperMainnetTest is Test {
     // ─── Discovery Tests ────────────────────────────────────────────────────────
 
     function test_ynRWAxAssetIsUSDC() public view {
-        address asset = IYnRWAx(YNRWAX).asset();
+        address asset = IYnVault(YNRWAX).asset();
         assertEq(asset, USDC, "ynRWAx underlying asset should be USDC");
     }
 
@@ -132,7 +132,7 @@ contract YieldNestKeeperMainnetTest is Test {
         console2.log("Earned yield (ynRWAx shares):", yield_);
 
         uint256 shares = keeper.totalPositionShares();
-        uint256 positionValue = IYnRWAx(YNRWAX).convertToAssets(shares);
+        uint256 positionValue = IYnVault(YNRWAX).convertToAssets(shares);
         uint256 debt = keeper.totalDebt();
         console2.log("Position value (convertToAssets):", positionValue);
         console2.log("Total debt (USDe):", debt);
@@ -311,7 +311,7 @@ contract YieldNestKeeperMainnetTest is Test {
         (address[11] memory route, uint256[5][5] memory swapParams, address[5] memory pools) = _curveRoute();
 
         return YieldNestKeeper.Config({
-            ynRWAx: IYnRWAx(YNRWAX),
+            vault: IYnVault(YNRWAX),
             positions: positions,
             debtToken: IERC20(VARIABLE_DEBT_USDE),
             rateProvider: IConversionRateProvider(address(rateProvider)),

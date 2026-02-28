@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {YieldNestKeeper} from "../src/YieldNestKeeper.sol";
-import {IYnRWAx} from "../src/interfaces/IYnRWAx.sol";
+import {IYnVault} from "../src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "../src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -23,7 +23,7 @@ contract DeployScript is Script {
         address[5] memory pools; // TODO: configure pools
 
         YieldNestKeeper.Config memory config = YieldNestKeeper.Config({
-            ynRWAx: IYnRWAx(address(0)), // TODO
+            vault: IYnVault(address(0)), // TODO
             positions: positions,
             debtToken: IERC20(address(0)), // TODO
             rateProvider: IConversionRateProvider(address(0)), // TODO
