@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {YieldNestKeeper} from "../src/YieldNestKeeper.sol";
-import {IYnRWAx} from "../src/interfaces/IYnRWAx.sol";
-import {IConversionRateProvider} from "../src/interfaces/IConversionRateProvider.sol";
-import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
+import {YieldNestKeeper} from "src/YieldNestKeeper.sol";
+import {IYnRWAx} from "src/interfaces/IYnRWAx.sol";
+import {IConversionRateProvider} from "src/interfaces/IConversionRateProvider.sol";
+import {AggregatorV3Interface} from "src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract MockYnRWAx is IERC20 {
