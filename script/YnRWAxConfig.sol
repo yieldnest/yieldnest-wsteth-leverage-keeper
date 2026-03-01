@@ -32,7 +32,7 @@ abstract contract YnRWAxConfig {
 
     // Chainlink Oracles
     address constant USDC_USD_ORACLE = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
-    address constant WSTETH_USD_ORACLE = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+    address constant WSTETH_USD_ORACLE = 0x8B6851156023f4f5A66F68BEA80851c3D905Ac93;
 
     // Curve Router NG v1.1
     address constant CURVE_ROUTER = 0x16C6521Dff6baB339122a0FE25a9116693265353;

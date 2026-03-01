@@ -5,6 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
 import {IYnVault} from "../../src/interfaces/IYnVault.sol";
 import {StablecoinRateProvider} from "../../src/StablecoinRateProvider.sol";
+import {LatestAnswerAdapter} from "../../src/LatestAnswerAdapter.sol";
 import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -20,15 +21,17 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     YieldNestKeeper keeper;
     StablecoinRateProvider rateProvider;
+    LatestAnswerAdapter wstethOracle;
     address admin = makeAddr("admin");
 
     function setUp() public {
         // Fork is configured via [profile.mainnet] eth_rpc_url in foundry.toml
 
         rateProvider = new StablecoinRateProvider(USDC);
+        wstethOracle = new LatestAnswerAdapter(WSTETH_USD_ORACLE, 8);
 
         keeper = new YieldNestKeeper(
-            admin, _buildConfig(rateProvider, AggregatorV3Interface(WSTETH_USD_ORACLE), 9500)
+            admin, _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9500)
         );
 
         // Grant ASSET_WITHDRAWER_ROLE on ynRWAx so keeper can call withdrawAsset
@@ -166,7 +169,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     function test_updateConfig() public {
         YieldNestKeeper.Config memory cfg =
-            _buildConfig(rateProvider, AggregatorV3Interface(WSTETH_USD_ORACLE), 9000);
+            _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9000);
         vm.prank(admin);
         keeper.updateConfig(cfg);
 
