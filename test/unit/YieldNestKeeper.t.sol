@@ -224,9 +224,6 @@ contract YieldNestKeeperTest is Test {
         vault.mint(wallet, 1000e18);
 
         keeper = new YieldNestKeeper(admin, _defaultConfig());
-
-        vm.prank(admin);
-        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
     }
 
     // ─── Harvest: Core Flow ──────────────────────────────────────────────────
@@ -296,10 +293,11 @@ contract YieldNestKeeperTest is Test {
         keeper.harvest();
     }
 
-    function test_harvest_revertsWithoutRole() public {
+    function test_harvest_isPermissionless() public {
+        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
         vm.prank(address(0xBAD));
-        vm.expectRevert();
         keeper.harvest();
+        assertGt(rewardAsset.balanceOf(destinationStrategy), destBefore, "Anyone should be able to harvest");
     }
 
     // ─── Harvest: Oracle Edge Cases ──────────────────────────────────────────
@@ -413,9 +411,6 @@ contract YieldNestKeeperTest is Test {
 
         YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
 
-        vm.prank(admin);
-        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
-
         uint256 yield_ = k.earnedYield();
         assertGt(yield_, 0, "Should have yield across multiple positions");
 
@@ -447,9 +442,6 @@ contract YieldNestKeeperTest is Test {
         cfg.positions = positions;
 
         YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
-
-        vm.prank(admin);
-        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
 
         // 1050 asset - 1000 debt = 50 yield
         uint256 yield_ = k.earnedYield();
@@ -483,9 +475,6 @@ contract YieldNestKeeperTest is Test {
         cfg.positions = positions;
 
         YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
-
-        vm.prank(admin);
-        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
 
         uint256 yield_ = k.earnedYield();
         assertGt(yield_, 0, "Should have yield with asset<debt decimals");
@@ -700,9 +689,6 @@ contract YieldNestKeeperTest is Test {
 
         YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
 
-        vm.prank(admin);
-        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
-
         // Should succeed - the decimal adjustment should handle different oracle decimals
         k.harvest();
     }
@@ -719,9 +705,6 @@ contract YieldNestKeeperTest is Test {
         cfg.minOutputBps = 1; // very permissive for mock
 
         YieldNestKeeper k = new YieldNestKeeper(admin, cfg);
-
-        vm.prank(admin);
-        k.grantRole(keccak256("HARVESTER_ROLE"), address(this));
 
         k.harvest();
     }

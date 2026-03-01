@@ -18,9 +18,6 @@ import {ICurveRouter} from "./interfaces/ICurveRouter.sol";
 contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // ─── Roles ────────────────────────────────────────────────────────────────────
-    bytes32 public constant HARVESTER_ROLE = keccak256("HARVESTER_ROLE");
-
     // ─── Configuration ────────────────────────────────────────────────────────────
 
     struct Config {
@@ -72,7 +69,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     /// @notice Parameterless harvest function. Computes earned yield, pulls vault shares from the
     ///         approved wallet, burns it for asset(), swaps asset() for rewardAsset on Curve,
     ///         and sends the reward to the destination strategy.
-    function harvest() external nonReentrant onlyRole(HARVESTER_ROLE) {
+    function harvest() external nonReentrant {
         Config memory c = config;
 
         // Step 1: Calculate yield surplus in vault shares

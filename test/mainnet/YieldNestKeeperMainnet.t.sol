@@ -42,9 +42,6 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         vm.prank(SAFE);
         IERC20(YNRWAX).approve(address(keeper), type(uint256).max);
 
-        // Grant HARVESTER_ROLE to the test contract
-        vm.prank(admin);
-        keeper.grantRole(keccak256("HARVESTER_ROLE"), address(this));
     }
 
     // ─── Discovery Tests ────────────────────────────────────────────────────────
@@ -140,9 +137,14 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         keeper.harvest();
     }
 
-    function test_harvestRevertsWithoutRole() public {
+    function test_harvestIsPermissionless() public {
+        uint256 yield_ = keeper.earnedYield();
+        if (yield_ == 0) {
+            console2.log("SKIP: No yield to harvest at current block");
+            return;
+        }
+
         vm.prank(makeAddr("random"));
-        vm.expectRevert();
         keeper.harvest();
     }
 
