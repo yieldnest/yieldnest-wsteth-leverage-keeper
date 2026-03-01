@@ -75,34 +75,24 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     function harvest() external nonReentrant onlyRole(HARVESTER_ROLE) {
         Config memory c = config;
 
-        // Step 1: Calculate total position value in asset terms
-        uint256 totalShares = _totalPositionShares(c);
-        uint256 positionValueInAsset = c.vault.convertToAssets(totalShares);
-
-        // Step 2: Calculate total debt in asset terms
-        uint256 totalDebtAmount = _totalDebt(c);
-        uint256 debtInAsset = _debtToAsset(c, totalDebtAmount);
-
-        // Step 3: Calculate yield surplus (in asset terms), then convert to vault shares
-        if (positionValueInAsset <= debtInAsset) revert NoYieldToHarvest();
-        uint256 yieldInAsset = positionValueInAsset - debtInAsset;
-        uint256 yieldInShares = c.vault.convertToShares(yieldInAsset);
+        // Step 1: Calculate yield surplus in vault shares
+        uint256 yieldInShares = _calculateYieldInShares(c);
         if (yieldInShares == 0) revert NoYieldToHarvest();
 
-        // Step 4: Pull vault shares from the approved wallet
+        // Step 2: Pull vault shares from the approved wallet
         IERC20(address(c.vault)).safeTransferFrom(c.approvedWallet, address(this), yieldInShares);
 
-        // Step 5: Burn vault shares for underlying asset via withdrawAsset
+        // Step 3: Burn vault shares for underlying asset via withdrawAsset
         address _asset = c.vault.asset();
         uint256 assetsToWithdraw = c.vault.convertToAssets(yieldInShares);
         uint256 balBefore = IERC20(_asset).balanceOf(address(this));
         c.vault.withdrawAsset(_asset, assetsToWithdraw, address(this), address(this));
         uint256 assetsReceived = IERC20(_asset).balanceOf(address(this)) - balBefore;
 
-        // Step 6: Swap asset() for rewardAsset on Curve
+        // Step 4: Swap asset() for rewardAsset on Curve
         uint256 rewardOut = _swapAssetForReward(c, assetsReceived);
 
-        // Step 7: Send reward to destination strategy
+        // Step 5: Send reward to destination strategy
         IERC20(c.rewardAsset).safeTransfer(c.destinationStrategy, rewardOut);
 
         emit Harvested(yieldInShares, assetsReceived, rewardOut);
@@ -144,20 +134,20 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     }
 
     /// @notice Returns the current earned yield in vault shares, or 0 if underwater.
-    function earnedYield() external view returns (uint256 yieldInShares) {
-        Config memory c = config;
-        uint256 totalSharesVal = _totalPositionShares(c);
-        uint256 positionValueInAsset = c.vault.convertToAssets(totalSharesVal);
-        uint256 totalDebtVal = _totalDebt(c);
-        uint256 debtInAsset = _debtToAsset(c, totalDebtVal);
-
-        if (positionValueInAsset > debtInAsset) {
-            uint256 yieldInAsset = positionValueInAsset - debtInAsset;
-            yieldInShares = c.vault.convertToShares(yieldInAsset);
-        }
+    function earnedYield() external view returns (uint256) {
+        return _calculateYieldInShares(config);
     }
 
     // ─── Internal Functions ───────────────────────────────────────────────────────
+
+    function _calculateYieldInShares(Config memory c) internal view returns (uint256 yieldInShares) {
+        uint256 positionValueInAsset = c.vault.convertToAssets(_totalPositionShares(c));
+        uint256 debtInAsset = _debtToAsset(c, _totalDebt(c));
+
+        if (positionValueInAsset > debtInAsset) {
+            yieldInShares = c.vault.convertToShares(positionValueInAsset - debtInAsset);
+        }
+    }
 
     function _totalPositionShares(Config memory c) internal view returns (uint256 total) {
         uint256 len = c.positions.length;
