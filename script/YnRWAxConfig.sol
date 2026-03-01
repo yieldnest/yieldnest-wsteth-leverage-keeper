@@ -32,7 +32,7 @@ abstract contract YnRWAxConfig {
 
     // Chainlink Oracles
     address constant USDC_USD_ORACLE = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
-    address constant WSTETH_USD_ORACLE = 0x8B6851156023f4f5A66F68BEA80851c3D905Ac93;
+    address constant WSTETH_USD_ORACLE = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
 
     // Curve Router NG v1.1
     address constant CURVE_ROUTER = 0x16C6521Dff6baB339122a0FE25a9116693265353;
@@ -49,11 +49,11 @@ abstract contract YnRWAxConfig {
 
     // ─── Config Builder ─────────────────────────────────────────────────────────
 
-    function _buildConfig(IConversionRateProvider rateProvider, uint256 minOutputBps)
-        internal
-        pure
-        returns (YieldNestKeeper.Config memory)
-    {
+    function _buildConfig(
+        IConversionRateProvider rateProvider,
+        AggregatorV3Interface rewardOracle,
+        uint256 minOutputBps
+    ) internal pure returns (YieldNestKeeper.Config memory) {
         address[] memory positions = new address[](1);
         positions[0] = SAFE;
 
@@ -72,7 +72,7 @@ abstract contract YnRWAxConfig {
             swapParams: swapParams,
             pools: pools,
             assetOracle: AggregatorV3Interface(USDC_USD_ORACLE),
-            rewardOracle: AggregatorV3Interface(WSTETH_USD_ORACLE),
+            rewardOracle: rewardOracle,
             maxOracleAge: 86400,
             minOutputBps: minOutputBps
         });

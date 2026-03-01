@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Script} from "forge-std/Script.sol";
 import {YieldNestKeeper} from "../src/YieldNestKeeper.sol";
 import {StablecoinRateProvider} from "../src/StablecoinRateProvider.sol";
+import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
 import {YnRWAxConfig} from "./YnRWAxConfig.sol";
 
 contract DeployScript is Script, YnRWAxConfig {
@@ -14,7 +15,8 @@ contract DeployScript is Script, YnRWAxConfig {
 
         StablecoinRateProvider rateProvider = new StablecoinRateProvider(USDC);
 
-        YieldNestKeeper.Config memory config = _buildConfig(rateProvider, 9900);
+        YieldNestKeeper.Config memory config =
+            _buildConfig(rateProvider, AggregatorV3Interface(WSTETH_USD_ORACLE), 9900);
 
         new YieldNestKeeper(admin, config);
 
