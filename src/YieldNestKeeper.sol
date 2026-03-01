@@ -41,11 +41,13 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     }
 
     Config public config;
+    address public initializer;
 
     // ─── Events ───────────────────────────────────────────────────────────────────
 
     event Harvested(uint256 yieldInShares, uint256 assetsWithdrawn, uint256 rewardOut);
     event ConfigUpdated();
+    event Initialized(address admin);
 
     // ─── Errors ───────────────────────────────────────────────────────────────────
 
@@ -55,13 +57,27 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     error CurveSwapFailed();
     error ZeroAddress();
     error InvalidBps();
+    error AlreadyInitialized();
+    error NotInitializer();
 
     // ─── Constructor ──────────────────────────────────────────────────────────────
 
-    constructor(address admin, Config memory _config) {
+    constructor(address _initializer) {
+        if (_initializer == address(0)) revert ZeroAddress();
+        initializer = _initializer;
+    }
+
+    // ─── Initialization ─────────────────────────────────────────────────────────
+
+    /// @notice One-time initialization. Must be called by the initializer set in the constructor.
+    function initialize(address admin, Config memory _config) external {
+        if (initializer == address(0)) revert AlreadyInitialized();
+        if (msg.sender != initializer) revert NotInitializer();
         _validateConfig(_config);
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         config = _config;
+        initializer = address(0);
+        emit Initialized(admin);
     }
 
     // ─── Public Entry Point ───────────────────────────────────────────────────────

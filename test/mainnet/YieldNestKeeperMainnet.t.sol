@@ -35,9 +35,8 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         rateProvider = new StablecoinRateProvider(USDC);
         wstethOracle = new LatestAnswerAdapter(WSTETH_USD_ORACLE, 8);
 
-        keeper = new YieldNestKeeper(
-            admin, _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), MIN_OUTPUT_BPS)
-        );
+        keeper = new YieldNestKeeper(address(this));
+        keeper.initialize(admin, _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), MIN_OUTPUT_BPS));
 
         // Grant ASSET_WITHDRAWER_ROLE on ynRWAx so keeper can call withdrawAsset
         vm.prank(YN_ADMIN);

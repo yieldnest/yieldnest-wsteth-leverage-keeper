@@ -21,7 +21,8 @@ contract DeployScript is Script, YnRWAxConfig {
         YieldNestKeeper.Config memory config =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9900);
 
-        new YieldNestKeeper(admin, config);
+        YieldNestKeeper keeper = new YieldNestKeeper(msg.sender);
+        keeper.initialize(admin, config);
 
         vm.stopBroadcast();
     }
