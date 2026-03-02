@@ -202,6 +202,8 @@ contract FlexStrategyLeverageKeeperMainnetTest is Test, YnRWAxConfig {
         assertGt(safeWstethReceived, 0, "Safe must receive wstETH via accounting module");
         // Strategy receives virtual accounting token tracking the deposit
         assertGt(accountingTokenReceived, 0, "Strategy must receive accounting token (virtual wstETH)");
+        // Accounting token minted equals wstETH deposited into Safe
+        assertEq(accountingTokenReceived, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
         // Strategy total assets increase
         assertGt(IYnVault(STRATEGY).totalAssets(), strategyTotalAssetsBefore, "Strategy total assets must increase");
 
@@ -240,10 +242,17 @@ contract FlexStrategyLeverageKeeperMainnetTest is Test, YnRWAxConfig {
             return;
         }
 
+        address accountingModule = IFlexStrategyView(STRATEGY).accountingModule();
+        address accountingToken = IAccountingModuleView(accountingModule).accountingToken();
+
         uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
+        uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
         vm.prank(makeAddr("random"));
         keeper.harvest();
-        assertGt(IERC20(WSTETH).balanceOf(SAFE), safeWstethBefore, "Random caller should be able to harvest");
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
+        uint256 accountingTokenReceived = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+        assertGt(safeWstethReceived, 0, "Random caller should be able to harvest");
+        assertEq(accountingTokenReceived, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
     }
 
     // ─── Admin Tests ────────────────────────────────────────────────────────────
@@ -349,9 +358,14 @@ contract FlexStrategyLeverageKeeperMainnetTest is Test, YnRWAxConfig {
         uint256 rateBefore = IYnVault(STRATEGY).convertToAssets(1e18);
         uint256 totalSupply = IERC20(STRATEGY).totalSupply();
 
+        uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
         uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
         keeper.harvest();
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
         uint256 deposited = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+
+        // wstETH received by Safe matches accounting token minted to strategy
+        assertEq(deposited, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
 
         uint256 rateAfter = IYnVault(STRATEGY).convertToAssets(1e18);
 
