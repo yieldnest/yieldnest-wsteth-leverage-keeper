@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
+import {FlexStrategyLeverageKeeper} from "../../src/FlexStrategyLeverageKeeper.sol";
 import {BaseLeverageKeeper} from "../../src/BaseLeverageKeeper.sol";
 import {IYnVault} from "../../src/interfaces/IYnVault.sol";
 import {StablecoinRateProvider} from "../../src/StablecoinRateProvider.sol";
@@ -25,7 +25,7 @@ interface IFlexStrategyView {
     function accountingModule() external view returns (address);
 }
 
-contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
+contract FlexStrategyLeverageKeeperMainnetTest is Test, YnRWAxConfig {
     // ─── Constants ───────────────────────────────────────────────────────────────
 
     uint256 constant BPS_BASE = 10_000;
@@ -34,7 +34,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     // ─── Test State ─────────────────────────────────────────────────────────────
 
-    YieldNestKeeper keeper;
+    FlexStrategyLeverageKeeper keeper;
     StablecoinRateProvider rateProvider;
     LatestAnswerAdapter wstethOracle;
     address admin = makeAddr("admin");
@@ -45,7 +45,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         rateProvider = new StablecoinRateProvider(USDC);
         wstethOracle = new LatestAnswerAdapter(WSTETH_USD_ORACLE, 8);
 
-        keeper = new YieldNestKeeper(address(this));
+        keeper = new FlexStrategyLeverageKeeper(address(this));
         keeper.initialize(admin, _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), MIN_OUTPUT_BPS));
 
         // Grant ASSET_WITHDRAWER_ROLE on ynRWAx so keeper can call withdrawAsset

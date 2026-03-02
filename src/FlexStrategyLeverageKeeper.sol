@@ -4,9 +4,9 @@ pragma solidity ^0.8.24;
 import {BaseLeverageKeeper} from "./BaseLeverageKeeper.sol";
 import {IFlexStrategy, IAccountingModule} from "./interfaces/IFlexStrategy.sol";
 
-/// @title YieldNestKeeper
+/// @title FlexStrategyLeverageKeeper
 /// @notice Leverage keeper that deposits harvested rewards into the strategy's accounting module.
-contract YieldNestKeeper is BaseLeverageKeeper {
+contract FlexStrategyLeverageKeeper is BaseLeverageKeeper {
     constructor(address _initializer) BaseLeverageKeeper(_initializer) {}
 
     /// @dev Uses PROCESSOR_ROLE on the strategy to call accountingModule.deposit(rewardOut).
