@@ -350,6 +350,21 @@ contract YieldNestKeeperTest is Test {
 
     // ─── View Functions ──────────────────────────────────────────────────────
 
+    function test_earnedYield_scalesWithAllocationFraction() public {
+        uint256 fullYield = keeper.earnedYield();
+        assertGt(fullYield, 0);
+
+        // Deploy a keeper with 90% allocation
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.allocationFraction = 0.9e18;
+        YieldNestKeeper k90 = _deployKeeper(cfg);
+
+        uint256 scaledYield = k90.earnedYield();
+        // scaledYield should be ~90% of fullYield (within rounding)
+        assertApproxEqRel(scaledYield, (fullYield * 90) / 100, 0.01e18, "Yield should scale with allocation fraction");
+        assertLt(scaledYield, fullYield, "90% allocation should yield less than 100%");
+    }
+
     function test_earnedYield_returnsZeroWhenUnderwater() public {
         debtToken.mint(position1, 1100e6); // way over
         uint256 yield_ = keeper.earnedYield();
@@ -614,6 +629,34 @@ contract YieldNestKeeperTest is Test {
         _deployKeeper(cfg); // should not revert
     }
 
+    function test_initialize_revertsZeroAllocationFraction() public {
+        YieldNestKeeper k = new YieldNestKeeper(address(this));
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.allocationFraction = 0;
+        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        k.initialize(admin, cfg);
+    }
+
+    function test_initialize_revertsExcessiveAllocationFraction() public {
+        YieldNestKeeper k = new YieldNestKeeper(address(this));
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.allocationFraction = 1e18 + 1;
+        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        k.initialize(admin, cfg);
+    }
+
+    function test_initialize_accepts1e18AllocationFraction() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.allocationFraction = 1e18;
+        _deployKeeper(cfg); // should not revert
+    }
+
+    function test_initialize_accepts1AllocationFraction() public {
+        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        cfg.allocationFraction = 1;
+        _deployKeeper(cfg); // should not revert
+    }
+
     // ─── Admin: updateConfig ─────────────────────────────────────────────────
 
     function test_updateConfig_succeeds() public {
@@ -678,6 +721,32 @@ contract YieldNestKeeperTest is Test {
         vm.prank(address(0xBAD));
         vm.expectRevert();
         keeper.setMaxOracleAge(3600);
+    }
+
+    // ─── Admin: setAllocationFraction ──────────────────────────────────────────
+
+    function test_setAllocationFraction_succeeds() public {
+        vm.prank(admin);
+        keeper.setAllocationFraction(0.9e18);
+        keeper.harvest(); // should work
+    }
+
+    function test_setAllocationFraction_revertsZero() public {
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        keeper.setAllocationFraction(0);
+    }
+
+    function test_setAllocationFraction_revertsAbove1e18() public {
+        vm.prank(admin);
+        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        keeper.setAllocationFraction(1e18 + 1);
+    }
+
+    function test_setAllocationFraction_revertsNonAdmin() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        keeper.setAllocationFraction(0.9e18);
     }
 
     // ─── Admin: recoverToken ─────────────────────────────────────────────────
@@ -778,7 +847,8 @@ contract YieldNestKeeperTest is Test {
             assetOracle: AggregatorV3Interface(address(assetOracle)),
             rewardOracle: AggregatorV3Interface(address(rewardOracle)),
             maxOracleAge: 86400,
-            minOutputBps: 9900
+            minOutputBps: 9900,
+            allocationFraction: 1e18
         });
     }
 }

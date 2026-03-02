@@ -74,7 +74,8 @@ abstract contract YnRWAxConfig {
             assetOracle: AggregatorV3Interface(USDC_USD_ORACLE),
             rewardOracle: rewardOracle,
             maxOracleAge: 86400,
-            minOutputBps: minOutputBps
+            minOutputBps: minOutputBps,
+            allocationFraction: 1e18
         });
     }
 

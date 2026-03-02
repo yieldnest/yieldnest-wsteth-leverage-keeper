@@ -38,6 +38,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         AggregatorV3Interface rewardOracle; // Chainlink oracle for rewardAsset
         uint256 maxOracleAge; // Max staleness for oracle prices (seconds)
         uint256 minOutputBps; // Min output as bps of oracle-expected (e.g. 9900 = 1% slippage)
+        uint256 allocationFraction; // Fraction of surplus to allocate (1e18 = 100%, 0.9e18 = 90%)
     }
 
     Config public config;
@@ -57,6 +58,7 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     error CurveSwapFailed();
     error ZeroAddress();
     error InvalidBps();
+    error InvalidFraction();
     error AlreadyInitialized();
     error NotInitializer();
 
@@ -128,6 +130,11 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         config.maxOracleAge = _maxOracleAge;
     }
 
+    function setAllocationFraction(uint256 _allocationFraction) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_allocationFraction == 0 || _allocationFraction > 1e18) revert InvalidFraction();
+        config.allocationFraction = _allocationFraction;
+    }
+
     /// @notice Recover any ERC20 tokens accidentally sent to this contract.
     function recoverToken(address token, address to, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (to == address(0)) revert ZeroAddress();
@@ -158,7 +165,8 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         uint256 debtInAsset = _debtToAsset(c, _totalDebt(c));
 
         if (positionValueInAsset > debtInAsset) {
-            yieldInShares = c.vault.convertToShares(positionValueInAsset - debtInAsset);
+            uint256 surplus = (positionValueInAsset - debtInAsset) * c.allocationFraction / 1e18;
+            yieldInShares = c.vault.convertToShares(surplus);
         }
     }
 
@@ -242,5 +250,6 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         if (address(c.assetOracle) == address(0)) revert ZeroAddress();
         if (address(c.rewardOracle) == address(0)) revert ZeroAddress();
         if (c.minOutputBps == 0 || c.minOutputBps > 10_000) revert InvalidBps();
+        if (c.allocationFraction == 0 || c.allocationFraction > 1e18) revert InvalidFraction();
     }
 }
