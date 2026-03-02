@@ -299,4 +299,29 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         assertEq(IERC20Metadata(WSTETH).decimals(), 18, "wstETH should have 18 decimals");
         assertEq(IERC20Metadata(VARIABLE_DEBT_USDE).decimals(), 18, "variableDebtUSDe should have 18 decimals");
     }
+
+    // ─── Strategy Rate ─────────────────────────────────────────────────────
+
+    function test_harvestIncreasesStrategyRate() public {
+        uint256 yield_ = keeper.earnedYield();
+        if (yield_ == 0) {
+            console2.log("SKIP: No yield to harvest at current block");
+            return;
+        }
+
+        uint256 rateBefore = IYnVault(STRATEGY).convertToAssets(1e18);
+        uint256 totalSupply = IERC20(STRATEGY).totalSupply();
+
+        uint256 strategyWstethBefore = IERC20(WSTETH).balanceOf(STRATEGY);
+        keeper.harvest();
+        uint256 wstethReceived = IERC20(WSTETH).balanceOf(STRATEGY) - strategyWstethBefore;
+
+        uint256 rateAfter = IYnVault(STRATEGY).convertToAssets(1e18);
+
+        assertGt(rateAfter, rateBefore, "Strategy rate should increase after harvest");
+
+        // wstETH received increases strategy total assets without minting new shares
+        uint256 expectedRate = rateBefore + wstethReceived * 1e18 / totalSupply;
+        assertApproxEqRel(rateAfter, expectedRate, 0.01e18, "Rate increase should match wstETH received per share");
+    }
 }
