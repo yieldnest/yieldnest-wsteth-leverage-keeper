@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
+import {BaseLeverageKeeper} from "../../src/BaseLeverageKeeper.sol";
 import {IYnVault} from "../../src/interfaces/IYnVault.sol";
 import {StablecoinRateProvider} from "../../src/StablecoinRateProvider.sol";
 import {LatestAnswerAdapter} from "../../src/LatestAnswerAdapter.sol";
@@ -21,6 +22,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     uint256 constant BPS_BASE = 10_000;
     uint256 constant MIN_OUTPUT_BPS = 9500;
+    bytes32 constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
 
     // ─── Test State ─────────────────────────────────────────────────────────────
 
@@ -42,10 +44,13 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         vm.prank(YN_ADMIN);
         IAccessControl(YNRWAX).grantRole(ASSET_WITHDRAWER_ROLE, address(keeper));
 
+        // Grant PROCESSOR_ROLE on strategy so keeper can call processor()
+        vm.prank(YN_ADMIN);
+        IAccessControl(STRATEGY).grantRole(PROCESSOR_ROLE, address(keeper));
+
         // Approve keeper to pull ynRWAx from safe
         vm.prank(SAFE);
         IERC20(YNRWAX).approve(address(keeper), type(uint256).max);
-
     }
 
     // ─── Discovery Tests ────────────────────────────────────────────────────────
@@ -196,7 +201,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         }
 
         vm.expectEmit(true, true, true, false);
-        emit YieldNestKeeper.Harvested(yield_, IYnVault(YNRWAX).convertToAssets(yield_), 0);
+        emit BaseLeverageKeeper.Harvested(yield_, IYnVault(YNRWAX).convertToAssets(yield_), 0);
         keeper.harvest();
     }
 
@@ -245,11 +250,11 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     function test_setMinOutputBps_revertsInvalidValue() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(0);
 
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(10_001);
     }
 
@@ -263,12 +268,12 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
     }
 
     function test_updateConfig() public {
-        YieldNestKeeper.Config memory cfg =
+        BaseLeverageKeeper.Config memory cfg =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9000);
 
         vm.prank(admin);
         vm.expectEmit();
-        emit YieldNestKeeper.ConfigUpdated();
+        emit BaseLeverageKeeper.ConfigUpdated();
         keeper.updateConfig(cfg);
 
         // Verify keeper functions with updated config
@@ -284,7 +289,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
     }
 
     function test_updateConfig_revertsNonAdmin() public {
-        YieldNestKeeper.Config memory cfg =
+        BaseLeverageKeeper.Config memory cfg =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9000);
 
         vm.prank(makeAddr("random"));

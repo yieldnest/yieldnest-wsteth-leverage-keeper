@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {YieldNestKeeper} from "../src/YieldNestKeeper.sol";
+import {BaseLeverageKeeper} from "../src/BaseLeverageKeeper.sol";
 import {IYnVault} from "../src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "../src/interfaces/IConversionRateProvider.sol";
 import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
@@ -53,13 +53,13 @@ abstract contract YnRWAxConfig {
         IConversionRateProvider rateProvider,
         AggregatorV3Interface rewardOracle,
         uint256 minOutputBps
-    ) internal pure returns (YieldNestKeeper.Config memory) {
+    ) internal pure returns (BaseLeverageKeeper.Config memory) {
         address[] memory positions = new address[](1);
         positions[0] = SAFE;
 
         (address[11] memory route, uint256[5][5] memory swapParams, address[5] memory pools) = _curveRoute();
 
-        return YieldNestKeeper.Config({
+        return BaseLeverageKeeper.Config({
             vault: IYnVault(YNRWAX),
             positions: positions,
             debtToken: IERC20(VARIABLE_DEBT_USDE),

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {YieldNestKeeper} from "src/YieldNestKeeper.sol";
+import {BaseLeverageKeeper} from "src/BaseLeverageKeeper.sol";
 import {StablecoinRateProvider} from "src/StablecoinRateProvider.sol";
 import {IYnVault} from "src/interfaces/IYnVault.sol";
 import {IConversionRateProvider} from "src/interfaces/IConversionRateProvider.sol";
@@ -188,6 +189,35 @@ contract MockCurveRouter {
     }
 }
 
+contract MockAccountingModule {
+    uint256 public lastDepositAmount;
+
+    function deposit(uint256 amount) external {
+        lastDepositAmount = amount;
+    }
+}
+
+contract MockFlexStrategy {
+    MockAccountingModule public accountingModule;
+    bytes[] public lastProcessorData;
+
+    constructor(MockAccountingModule _accountingModule) {
+        accountingModule = _accountingModule;
+    }
+
+    function processor(address[] calldata targets, uint256[] memory, bytes[] calldata data)
+        external
+        returns (bytes[] memory returnData)
+    {
+        returnData = new bytes[](targets.length);
+        for (uint256 i; i < targets.length; i++) {
+            (bool success, bytes memory ret) = targets[i].call(data[i]);
+            require(success, "MockFlexStrategy: processor call failed");
+            returnData[i] = ret;
+        }
+    }
+}
+
 // ─── Test Contract ──────────────────────────────────────────────────────────
 
 contract YieldNestKeeperTest is Test {
@@ -200,11 +230,12 @@ contract YieldNestKeeperTest is Test {
     MockOracle public assetOracle;
     MockOracle public rewardOracle;
     MockCurveRouter public curveRouter;
+    MockAccountingModule public accountingModule;
+    MockFlexStrategy public strategy;
 
     address public admin = address(0xAD);
     address public wallet = address(0xA1);
     address public position1 = address(0xB1);
-    address public destinationStrategy = address(0xDE);
 
     function setUp() public {
         asset = new MockERC20("Asset", 18);
@@ -215,6 +246,8 @@ contract YieldNestKeeperTest is Test {
         assetOracle = new MockOracle(1e8, 8);
         rewardOracle = new MockOracle(1e8, 8);
         curveRouter = new MockCurveRouter(address(asset), address(rewardAsset), 100e18);
+        accountingModule = new MockAccountingModule();
+        strategy = new MockFlexStrategy(accountingModule);
 
         // position1 holds 1000 vault shares and 1000 debt tokens
         vault.mint(position1, 1000e18);
@@ -229,15 +262,15 @@ contract YieldNestKeeperTest is Test {
     // ─── Harvest: Core Flow ──────────────────────────────────────────────────
 
     function test_harvest_succeeds() public {
-        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
+        uint256 destBefore = rewardAsset.balanceOf(address(strategy));
         keeper.harvest();
-        uint256 destAfter = rewardAsset.balanceOf(destinationStrategy);
+        uint256 destAfter = rewardAsset.balanceOf(address(strategy));
         assertGt(destAfter, destBefore, "Destination should have received reward tokens");
     }
 
     function test_harvest_emitsEvent() public {
         vm.expectEmit(false, false, false, false);
-        emit YieldNestKeeper.Harvested(0, 0, 0);
+        emit BaseLeverageKeeper.Harvested(0, 0, 0);
         keeper.harvest();
     }
 
@@ -274,7 +307,7 @@ contract YieldNestKeeperTest is Test {
 
     function test_harvest_revertsNoYield_debtExceedsPosition() public {
         debtToken.mint(position1, 1050e6); // total debt = 2050e6 > 1050 asset value
-        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        vm.expectRevert(BaseLeverageKeeper.NoYieldToHarvest.selector);
         keeper.harvest();
     }
 
@@ -282,22 +315,22 @@ contract YieldNestKeeperTest is Test {
         // Position value = 1050e18. Need debt to equal that.
         // 1050e6 debt (6 dec) converts to 1050e18 asset. Current is 1000e6, add 50e6.
         debtToken.mint(position1, 50e6);
-        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        vm.expectRevert(BaseLeverageKeeper.NoYieldToHarvest.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsNoYield_zeroShares() public {
         // Set rate to exactly 1.0 so position value == debt
         vault.setRate(1e18);
-        vm.expectRevert(YieldNestKeeper.NoYieldToHarvest.selector);
+        vm.expectRevert(BaseLeverageKeeper.NoYieldToHarvest.selector);
         keeper.harvest();
     }
 
     function test_harvest_isPermissionless() public {
-        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
+        uint256 destBefore = rewardAsset.balanceOf(address(strategy));
         vm.prank(address(0xBAD));
         keeper.harvest();
-        assertGt(rewardAsset.balanceOf(destinationStrategy), destBefore, "Anyone should be able to harvest");
+        assertGt(rewardAsset.balanceOf(address(strategy)), destBefore, "Anyone should be able to harvest");
     }
 
     // ─── Harvest: Oracle Edge Cases ──────────────────────────────────────────
@@ -305,38 +338,38 @@ contract YieldNestKeeperTest is Test {
     function test_harvest_revertsOnStaleAssetOracle() public {
         vm.warp(100_000);
         assetOracle.setUpdatedAt(block.timestamp - 86401);
-        vm.expectRevert(YieldNestKeeper.StaleOraclePrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.StaleOraclePrice.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsOnStaleRewardOracle() public {
         vm.warp(100_000);
         rewardOracle.setUpdatedAt(block.timestamp - 86401);
-        vm.expectRevert(YieldNestKeeper.StaleOraclePrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.StaleOraclePrice.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsOnZeroAssetPrice() public {
         assetOracle.setPrice(0);
-        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidPrice.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsOnNegativeAssetPrice() public {
         assetOracle.setPrice(-1);
-        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidPrice.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsOnZeroRewardPrice() public {
         rewardOracle.setPrice(0);
-        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidPrice.selector);
         keeper.harvest();
     }
 
     function test_harvest_revertsOnNegativeRewardPrice() public {
         rewardOracle.setPrice(-1);
-        vm.expectRevert(YieldNestKeeper.InvalidPrice.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidPrice.selector);
         keeper.harvest();
     }
 
@@ -355,7 +388,7 @@ contract YieldNestKeeperTest is Test {
         assertGt(fullYield, 0);
 
         // Deploy a keeper with 90% allocation
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.allocationFraction = 0.9e18;
         YieldNestKeeper k90 = _deployKeeper(cfg);
 
@@ -403,7 +436,7 @@ contract YieldNestKeeperTest is Test {
         positions[0] = position1;
         positions[1] = position2;
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.positions = positions;
 
         YieldNestKeeper k = _deployKeeper(cfg);
@@ -421,7 +454,7 @@ contract YieldNestKeeperTest is Test {
         positions[0] = position1;
         positions[1] = position2;
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.positions = positions;
 
         YieldNestKeeper k = _deployKeeper(cfg);
@@ -429,9 +462,9 @@ contract YieldNestKeeperTest is Test {
         uint256 yield_ = k.earnedYield();
         assertGt(yield_, 0, "Should have yield across multiple positions");
 
-        uint256 destBefore = rewardAsset.balanceOf(destinationStrategy);
+        uint256 destBefore = rewardAsset.balanceOf(address(strategy));
         k.harvest();
-        assertGt(rewardAsset.balanceOf(destinationStrategy), destBefore);
+        assertGt(rewardAsset.balanceOf(address(strategy)), destBefore);
     }
 
     // ─── Decimal Handling ────────────────────────────────────────────────────
@@ -451,7 +484,7 @@ contract YieldNestKeeperTest is Test {
         address[] memory positions = new address[](1);
         positions[0] = pos;
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.vault = IYnVault(address(vault18));
         cfg.debtToken = IERC20(address(debt18));
         cfg.positions = positions;
@@ -484,7 +517,7 @@ contract YieldNestKeeperTest is Test {
         address[] memory positions = new address[](1);
         positions[0] = pos;
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.vault = IYnVault(address(vault6));
         cfg.debtToken = IERC20(address(debt18));
         cfg.positions = positions;
@@ -498,7 +531,7 @@ contract YieldNestKeeperTest is Test {
     // ─── Constructor ────────────────────────────────────────────────────────
 
     function test_constructor_revertsZeroInitializer() public {
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         new YieldNestKeeper(address(0));
     }
 
@@ -518,141 +551,141 @@ contract YieldNestKeeperTest is Test {
     }
 
     function test_initialize_revertsAlreadyInitialized() public {
-        vm.expectRevert(YieldNestKeeper.AlreadyInitialized.selector);
+        vm.expectRevert(BaseLeverageKeeper.AlreadyInitialized.selector);
         keeper.initialize(admin, _defaultConfig());
     }
 
     function test_initialize_revertsNotInitializer() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
         vm.prank(address(0xBAD));
-        vm.expectRevert(YieldNestKeeper.NotInitializer.selector);
+        vm.expectRevert(BaseLeverageKeeper.NotInitializer.selector);
         k.initialize(admin, _defaultConfig());
     }
 
     function test_initialize_revertsZeroVault() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.vault = IYnVault(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroDebtToken() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.debtToken = IERC20(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroRateProvider() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.rateProvider = IConversionRateProvider(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroApprovedWallet() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.approvedWallet = address(0);
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroRewardAsset() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.rewardAsset = address(0);
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroDestinationStrategy() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.destinationStrategy = address(0);
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroCurveRouter() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.curveRouter = ICurveRouter(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroAssetOracle() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.assetOracle = AggregatorV3Interface(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroRewardOracle() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.rewardOracle = AggregatorV3Interface(address(0));
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsZeroBps() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.minOutputBps = 0;
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsExcessiveBps() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.minOutputBps = 10_001;
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_accepts10000Bps() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.minOutputBps = 10_000;
         _deployKeeper(cfg); // should not revert
     }
 
     function test_initialize_accepts1Bps() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.minOutputBps = 1;
         _deployKeeper(cfg); // should not revert
     }
 
     function test_initialize_revertsZeroAllocationFraction() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.allocationFraction = 0;
-        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidFraction.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_revertsExcessiveAllocationFraction() public {
         YieldNestKeeper k = new YieldNestKeeper(address(this));
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.allocationFraction = 1e18 + 1;
-        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidFraction.selector);
         k.initialize(admin, cfg);
     }
 
     function test_initialize_accepts1e18AllocationFraction() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.allocationFraction = 1e18;
         _deployKeeper(cfg); // should not revert
     }
 
     function test_initialize_accepts1AllocationFraction() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.allocationFraction = 1;
         _deployKeeper(cfg); // should not revert
     }
@@ -660,27 +693,27 @@ contract YieldNestKeeperTest is Test {
     // ─── Admin: updateConfig ─────────────────────────────────────────────────
 
     function test_updateConfig_succeeds() public {
-        YieldNestKeeper.Config memory newCfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory newCfg = _defaultConfig();
         newCfg.minOutputBps = 9800;
 
         vm.prank(admin);
         vm.expectEmit();
-        emit YieldNestKeeper.ConfigUpdated();
+        emit BaseLeverageKeeper.ConfigUpdated();
         keeper.updateConfig(newCfg);
     }
 
     function test_updateConfig_revertsNonAdmin() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         vm.prank(address(0xBAD));
         vm.expectRevert();
         keeper.updateConfig(cfg);
     }
 
     function test_updateConfig_revertsInvalidConfig() public {
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.vault = IYnVault(address(0));
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         keeper.updateConfig(cfg);
     }
 
@@ -694,13 +727,13 @@ contract YieldNestKeeperTest is Test {
 
     function test_setMinOutputBps_revertsZero() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(0);
     }
 
     function test_setMinOutputBps_revertsAbove10000() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(10_001);
     }
 
@@ -733,13 +766,13 @@ contract YieldNestKeeperTest is Test {
 
     function test_setAllocationFraction_revertsZero() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidFraction.selector);
         keeper.setAllocationFraction(0);
     }
 
     function test_setAllocationFraction_revertsAbove1e18() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidFraction.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidFraction.selector);
         keeper.setAllocationFraction(1e18 + 1);
     }
 
@@ -763,7 +796,7 @@ contract YieldNestKeeperTest is Test {
         MockERC20 stuck = new MockERC20("Stuck", 18);
         stuck.mint(address(keeper), 100e18);
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.ZeroAddress.selector);
+        vm.expectRevert(BaseLeverageKeeper.ZeroAddress.selector);
         keeper.recoverToken(address(stuck), address(0), 100e18);
     }
 
@@ -792,7 +825,7 @@ contract YieldNestKeeperTest is Test {
         // Asset oracle 8 decimals at $1, reward oracle 18 decimals at $2000
         MockOracle rewardOracle18 = new MockOracle(2000e18, 18);
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.rewardOracle = AggregatorV3Interface(address(rewardOracle18));
 
         YieldNestKeeper k = _deployKeeper(cfg);
@@ -805,7 +838,7 @@ contract YieldNestKeeperTest is Test {
         // Reward at $3000 (like wstETH), asset at $1 (like USDC)
         rewardOracle = new MockOracle(3000e8, 8);
 
-        YieldNestKeeper.Config memory cfg = _defaultConfig();
+        BaseLeverageKeeper.Config memory cfg = _defaultConfig();
         cfg.rewardOracle = AggregatorV3Interface(address(rewardOracle));
 
         // Lower minOutputBps since Curve mock returns fixed 100e18 which may be
@@ -817,14 +850,22 @@ contract YieldNestKeeperTest is Test {
         k.harvest();
     }
 
+    // ─── Post-Harvest: Accounting Module Deposit ───────────────────────────
+
+    function test_harvest_depositsIntoAccountingModule() public {
+        assertEq(accountingModule.lastDepositAmount(), 0);
+        keeper.harvest();
+        assertEq(accountingModule.lastDepositAmount(), 100e18, "Should deposit reward amount into accounting module");
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
-    function _deployKeeper(YieldNestKeeper.Config memory cfg) internal returns (YieldNestKeeper k) {
+    function _deployKeeper(BaseLeverageKeeper.Config memory cfg) internal returns (YieldNestKeeper k) {
         k = new YieldNestKeeper(address(this));
         k.initialize(admin, cfg);
     }
 
-    function _defaultConfig() internal view returns (YieldNestKeeper.Config memory) {
+    function _defaultConfig() internal view returns (BaseLeverageKeeper.Config memory) {
         address[] memory positions = new address[](1);
         positions[0] = position1;
 
@@ -832,14 +873,14 @@ contract YieldNestKeeperTest is Test {
         uint256[5][5] memory swapParams;
         address[5] memory pools;
 
-        return YieldNestKeeper.Config({
+        return BaseLeverageKeeper.Config({
             vault: IYnVault(address(vault)),
             positions: positions,
             debtToken: IERC20(address(debtToken)),
             rateProvider: IConversionRateProvider(address(rateProvider)),
             approvedWallet: wallet,
             rewardAsset: address(rewardAsset),
-            destinationStrategy: destinationStrategy,
+            destinationStrategy: address(strategy),
             curveRouter: ICurveRouter(address(curveRouter)),
             route: route,
             swapParams: swapParams,
