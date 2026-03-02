@@ -153,6 +153,15 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         return _totalDebt(config);
     }
 
+    /// @notice Returns position value, debt, and surplus (all in asset terms). Surplus is 0 if underwater.
+    function surplus()
+        external
+        view
+        returns (uint256 positionValueInAsset, uint256 debtInAsset, uint256 surplusInAsset)
+    {
+        return _surplus(config);
+    }
+
     /// @notice Returns the current earned yield in vault shares, or 0 if underwater.
     function earnedYield() external view returns (uint256) {
         return _calculateYieldInShares(config);
@@ -160,13 +169,22 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
 
     // ─── Internal Functions ───────────────────────────────────────────────────────
 
-    function _calculateYieldInShares(Config memory c) internal view returns (uint256 yieldInShares) {
-        uint256 positionValueInAsset = c.vault.convertToAssets(_totalPositionShares(c));
-        uint256 debtInAsset = _debtToAsset(c, _totalDebt(c));
-
+    function _surplus(Config memory c)
+        internal
+        view
+        returns (uint256 positionValueInAsset, uint256 debtInAsset, uint256 surplusInAsset)
+    {
+        positionValueInAsset = c.vault.convertToAssets(_totalPositionShares(c));
+        debtInAsset = _debtToAsset(c, _totalDebt(c));
         if (positionValueInAsset > debtInAsset) {
-            uint256 surplus = (positionValueInAsset - debtInAsset) * c.allocationFraction / 1e18;
-            yieldInShares = c.vault.convertToShares(surplus);
+            surplusInAsset = positionValueInAsset - debtInAsset;
+        }
+    }
+
+    function _calculateYieldInShares(Config memory c) internal view returns (uint256 yieldInShares) {
+        (,, uint256 s) = _surplus(c);
+        if (s > 0) {
+            yieldInShares = c.vault.convertToShares(s * c.allocationFraction / 1e18);
         }
     }
 
