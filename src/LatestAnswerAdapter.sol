@@ -6,7 +6,7 @@ import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 /// @title LatestAnswerAdapter
 /// @notice Wraps an oracle that only exposes latestAnswer() (e.g. Aave's
 ///         WstETHSynchronicityPriceAdapter) into the full AggregatorV3Interface
-///         expected by YieldNestKeeper.
+///         expected by FlexStrategyLeverageKeeper.
 contract LatestAnswerAdapter is AggregatorV3Interface {
     address public immutable SOURCE;
     uint8 private immutable _decimals;

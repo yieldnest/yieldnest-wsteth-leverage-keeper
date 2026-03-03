@@ -2,7 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {YieldNestKeeper} from "../../src/YieldNestKeeper.sol";
+import {FlexStrategyLeverageKeeper} from "../../src/FlexStrategyLeverageKeeper.sol";
+import {BaseLeverageKeeper} from "../../src/BaseLeverageKeeper.sol";
 import {IYnVault} from "../../src/interfaces/IYnVault.sol";
 import {StablecoinRateProvider} from "../../src/StablecoinRateProvider.sol";
 import {LatestAnswerAdapter} from "../../src/LatestAnswerAdapter.sol";
@@ -16,15 +17,24 @@ interface IAccessControl {
     function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
-contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
+interface IAccountingModuleView {
+    function accountingToken() external view returns (address);
+}
+
+interface IFlexStrategyView {
+    function accountingModule() external view returns (address);
+}
+
+contract FlexStrategyLeverageKeeperMainnetTest is Test, YnRWAxConfig {
     // ─── Constants ───────────────────────────────────────────────────────────────
 
     uint256 constant BPS_BASE = 10_000;
     uint256 constant MIN_OUTPUT_BPS = 9500;
+    bytes32 constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
 
     // ─── Test State ─────────────────────────────────────────────────────────────
 
-    YieldNestKeeper keeper;
+    FlexStrategyLeverageKeeper keeper;
     StablecoinRateProvider rateProvider;
     LatestAnswerAdapter wstethOracle;
     address admin = makeAddr("admin");
@@ -35,17 +45,20 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         rateProvider = new StablecoinRateProvider(USDC);
         wstethOracle = new LatestAnswerAdapter(WSTETH_USD_ORACLE, 8);
 
-        keeper = new YieldNestKeeper(address(this));
+        keeper = new FlexStrategyLeverageKeeper(address(this));
         keeper.initialize(admin, _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), MIN_OUTPUT_BPS));
 
         // Grant ASSET_WITHDRAWER_ROLE on ynRWAx so keeper can call withdrawAsset
         vm.prank(YN_ADMIN);
         IAccessControl(YNRWAX).grantRole(ASSET_WITHDRAWER_ROLE, address(keeper));
 
+        // Grant PROCESSOR_ROLE on strategy so keeper can call processor()
+        vm.prank(YN_ADMIN);
+        IAccessControl(STRATEGY).grantRole(PROCESSOR_ROLE, address(keeper));
+
         // Approve keeper to pull ynRWAx from safe
         vm.prank(SAFE);
         IERC20(YNRWAX).approve(address(keeper), type(uint256).max);
-
     }
 
     // ─── Discovery Tests ────────────────────────────────────────────────────────
@@ -116,23 +129,29 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
             return;
         }
 
+        // Resolve accounting token for the strategy
+        address accountingModule = IFlexStrategyView(STRATEGY).accountingModule();
+        address accountingToken = IAccountingModuleView(accountingModule).accountingToken();
+
         uint256 safeSharesBefore = IERC20(YNRWAX).balanceOf(SAFE);
-        uint256 strategyWstethBefore = IERC20(WSTETH).balanceOf(STRATEGY);
+        uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
+        uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
         uint256 keeperUsdcBefore = IERC20(USDC).balanceOf(address(keeper));
         uint256 keeperWstethBefore = IERC20(WSTETH).balanceOf(address(keeper));
 
         keeper.harvest();
 
         uint256 safeSharesAfter = IERC20(YNRWAX).balanceOf(SAFE);
-        uint256 strategyWstethAfter = IERC20(WSTETH).balanceOf(STRATEGY);
 
         // Vault shares were pulled from safe
         assertLt(safeSharesAfter, safeSharesBefore, "Safe should have fewer ynRWAx shares after harvest");
         assertEq(safeSharesBefore - safeSharesAfter, yield_, "Shares pulled should equal earnedYield");
 
-        // Strategy received wstETH reward
-        uint256 received = strategyWstethAfter - strategyWstethBefore;
-        assertGt(received, 0, "Strategy should receive wstETH reward");
+        // wstETH deposited via accounting module: Safe receives wstETH, strategy receives virtual token
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
+        uint256 accountingTokenReceived = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+        assertGt(safeWstethReceived, 0, "Safe should receive wstETH via accounting module deposit");
+        assertEq(accountingTokenReceived, safeWstethReceived, "Accounting token minted should match wstETH deposited");
 
         // Verify received wstETH is roughly correct using oracle prices
         uint256 usdcFromYield = IYnVault(YNRWAX).convertToAssets(yield_);
@@ -141,9 +160,9 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         uint256 expectedWsteth =
             (usdcFromYield * uint256(usdcPrice) * 1e18) / (uint256(wstethPrice) * 1e6);
         uint256 slippageMirror = BPS_BASE - MIN_OUTPUT_BPS; // e.g. 500 bps = 5%
-        assertGe(received, (expectedWsteth * MIN_OUTPUT_BPS) / BPS_BASE, "Received wstETH below slippage tolerance");
+        assertGe(safeWstethReceived, (expectedWsteth * MIN_OUTPUT_BPS) / BPS_BASE, "Received wstETH below slippage tolerance");
         assertLe(
-            received,
+            safeWstethReceived,
             (expectedWsteth * (BPS_BASE + slippageMirror)) / BPS_BASE,
             "Received wstETH unreasonably high"
         );
@@ -156,21 +175,37 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         assertEq(keeper.earnedYield(), 0, "No yield should remain after harvest");
     }
 
-    function test_harvestSendsWstethToStrategy() public {
+    function test_harvestDepositsWstethViaAccountingModule() public {
         uint256 yield_ = keeper.earnedYield();
         if (yield_ == 0) {
             console2.log("SKIP: No yield to harvest at current block");
             return;
         }
 
+        // Resolve accounting token for the strategy
+        address accountingModule = IFlexStrategyView(STRATEGY).accountingModule();
+        address accountingToken = IAccountingModuleView(accountingModule).accountingToken();
+
         // Compute expected USDC output from burning yield shares
         uint256 expectedUsdc = IYnVault(YNRWAX).convertToAssets(yield_);
 
-        uint256 strategyBefore = IERC20(WSTETH).balanceOf(STRATEGY);
-        keeper.harvest();
-        uint256 received = IERC20(WSTETH).balanceOf(STRATEGY) - strategyBefore;
+        uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
+        uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
+        uint256 strategyTotalAssetsBefore = IYnVault(STRATEGY).totalAssets();
 
-        assertGt(received, 0, "Strategy must receive wstETH");
+        keeper.harvest();
+
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
+        uint256 accountingTokenReceived = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+
+        // wstETH lands in Safe via accounting module deposit
+        assertGt(safeWstethReceived, 0, "Safe must receive wstETH via accounting module");
+        // Strategy receives virtual accounting token tracking the deposit
+        assertGt(accountingTokenReceived, 0, "Strategy must receive accounting token (virtual wstETH)");
+        // Accounting token minted equals wstETH deposited into Safe
+        assertEq(accountingTokenReceived, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
+        // Strategy total assets increase
+        assertGt(IYnVault(STRATEGY).totalAssets(), strategyTotalAssetsBefore, "Strategy total assets must increase");
 
         // Verify reward amount is reasonable relative to USDC input using oracle prices
         (, int256 usdcPrice,,,) = AggregatorV3Interface(USDC_USD_ORACLE).latestRoundData();
@@ -180,9 +215,9 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
         // Received should be within slippage tolerance (symmetric band around oracle expected)
         uint256 slippageMirror = BPS_BASE - MIN_OUTPUT_BPS;
-        assertGe(received, (expectedWsteth * MIN_OUTPUT_BPS) / BPS_BASE, "Received wstETH below slippage tolerance");
+        assertGe(safeWstethReceived, (expectedWsteth * MIN_OUTPUT_BPS) / BPS_BASE, "Received wstETH below slippage tolerance");
         assertLe(
-            received,
+            safeWstethReceived,
             (expectedWsteth * (BPS_BASE + slippageMirror)) / BPS_BASE,
             "Received wstETH unreasonably high"
         );
@@ -196,7 +231,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         }
 
         vm.expectEmit(true, true, true, false);
-        emit YieldNestKeeper.Harvested(yield_, IYnVault(YNRWAX).convertToAssets(yield_), 0);
+        emit BaseLeverageKeeper.Harvested(yield_, IYnVault(YNRWAX).convertToAssets(yield_), 0);
         keeper.harvest();
     }
 
@@ -207,10 +242,17 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
             return;
         }
 
-        uint256 strategyBefore = IERC20(WSTETH).balanceOf(STRATEGY);
+        address accountingModule = IFlexStrategyView(STRATEGY).accountingModule();
+        address accountingToken = IAccountingModuleView(accountingModule).accountingToken();
+
+        uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
+        uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
         vm.prank(makeAddr("random"));
         keeper.harvest();
-        assertGt(IERC20(WSTETH).balanceOf(STRATEGY), strategyBefore, "Random caller should be able to harvest");
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
+        uint256 accountingTokenReceived = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+        assertGt(safeWstethReceived, 0, "Random caller should be able to harvest");
+        assertEq(accountingTokenReceived, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
     }
 
     // ─── Admin Tests ────────────────────────────────────────────────────────────
@@ -245,11 +287,11 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
 
     function test_setMinOutputBps_revertsInvalidValue() public {
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(0);
 
         vm.prank(admin);
-        vm.expectRevert(YieldNestKeeper.InvalidBps.selector);
+        vm.expectRevert(BaseLeverageKeeper.InvalidBps.selector);
         keeper.setMinOutputBps(10_001);
     }
 
@@ -263,12 +305,12 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
     }
 
     function test_updateConfig() public {
-        YieldNestKeeper.Config memory cfg =
+        BaseLeverageKeeper.Config memory cfg =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9000);
 
         vm.prank(admin);
         vm.expectEmit();
-        emit YieldNestKeeper.ConfigUpdated();
+        emit BaseLeverageKeeper.ConfigUpdated();
         keeper.updateConfig(cfg);
 
         // Verify keeper functions with updated config
@@ -284,7 +326,7 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
     }
 
     function test_updateConfig_revertsNonAdmin() public {
-        YieldNestKeeper.Config memory cfg =
+        BaseLeverageKeeper.Config memory cfg =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9000);
 
         vm.prank(makeAddr("random"));
@@ -298,5 +340,39 @@ contract YieldNestKeeperMainnetTest is Test, YnRWAxConfig {
         assertEq(IERC20Metadata(USDC).decimals(), 6, "USDC should have 6 decimals");
         assertEq(IERC20Metadata(WSTETH).decimals(), 18, "wstETH should have 18 decimals");
         assertEq(IERC20Metadata(VARIABLE_DEBT_USDE).decimals(), 18, "variableDebtUSDe should have 18 decimals");
+    }
+
+    // ─── Strategy Rate ─────────────────────────────────────────────────────
+
+    function test_harvestIncreasesStrategyRate() public {
+        uint256 yield_ = keeper.earnedYield();
+        if (yield_ == 0) {
+            console2.log("SKIP: No yield to harvest at current block");
+            return;
+        }
+
+        // Resolve accounting token for the strategy
+        address accountingModule = IFlexStrategyView(STRATEGY).accountingModule();
+        address accountingToken = IAccountingModuleView(accountingModule).accountingToken();
+
+        uint256 rateBefore = IYnVault(STRATEGY).convertToAssets(1e18);
+        uint256 totalSupply = IERC20(STRATEGY).totalSupply();
+
+        uint256 safeWstethBefore = IERC20(WSTETH).balanceOf(SAFE);
+        uint256 accountingTokenBefore = IERC20(accountingToken).balanceOf(STRATEGY);
+        keeper.harvest();
+        uint256 safeWstethReceived = IERC20(WSTETH).balanceOf(SAFE) - safeWstethBefore;
+        uint256 deposited = IERC20(accountingToken).balanceOf(STRATEGY) - accountingTokenBefore;
+
+        // wstETH received by Safe matches accounting token minted to strategy
+        assertEq(deposited, safeWstethReceived, "Accounting token increase should equal Safe wstETH increase");
+
+        uint256 rateAfter = IYnVault(STRATEGY).convertToAssets(1e18);
+
+        assertGt(rateAfter, rateBefore, "Strategy rate should increase after harvest");
+
+        // Accounting token deposit increases strategy total assets without minting new shares
+        uint256 expectedRate = rateBefore + deposited * 1e18 / totalSupply;
+        assertApproxEqRel(rateAfter, expectedRate, 0.01e18, "Rate increase should match wstETH deposited per share");
     }
 }

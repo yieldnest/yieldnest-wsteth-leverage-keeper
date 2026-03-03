@@ -11,11 +11,12 @@ import {IConversionRateProvider} from "./interfaces/IConversionRateProvider.sol"
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {ICurveRouter} from "./interfaces/ICurveRouter.sol";
 
-/// @title YieldNestKeeper
-/// @notice Harvests earned yield from vault positions by comparing vault share value against debt,
-///         withdrawing the surplus, swapping the underlying asset for a reward token on Curve,
-///         and forwarding the reward to a destination strategy.
-contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
+/// @title BaseLeverageKeeper
+/// @notice Abstract base for leverage keepers. Harvests earned yield from vault positions by comparing
+///         vault share value against debt, withdrawing the surplus, swapping the underlying asset for
+///         a reward token on Curve, forwarding the reward to a destination strategy, and calling a
+///         post-harvest hook for subclass-specific logic.
+abstract contract BaseLeverageKeeper is AccessControlEnumerable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ─── Configuration ────────────────────────────────────────────────────────────
@@ -110,6 +111,9 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
         // Step 5: Send reward to destination strategy
         IERC20(c.rewardAsset).safeTransfer(c.destinationStrategy, rewardOut);
 
+        // Step 6: Post-harvest hook
+        _onPostHarvest(c, rewardOut);
+
         emit Harvested(yieldInShares, assetsReceived, rewardOut);
     }
 
@@ -168,6 +172,9 @@ contract YieldNestKeeper is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ─── Internal Functions ───────────────────────────────────────────────────────
+
+    /// @notice Post-harvest hook for subclass-specific logic.
+    function _onPostHarvest(Config memory c, uint256 rewardOut) internal virtual;
 
     function _surplus(Config memory c)
         internal

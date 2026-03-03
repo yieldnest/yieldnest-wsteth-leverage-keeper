@@ -5,7 +5,7 @@ import {IConversionRateProvider} from "./interfaces/IConversionRateProvider.sol"
 
 /// @title StablecoinRateProvider
 /// @notice Returns a fixed 1:1 conversion rate between two stablecoins.
-///         Decimal normalization is handled by the consumer (YieldNestKeeper._debtToAsset).
+///         Decimal normalization is handled by the consumer (FlexStrategyLeverageKeeper._debtToAsset).
 contract StablecoinRateProvider is IConversionRateProvider {
     address public immutable BASE_ASSET;
 
