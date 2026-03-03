@@ -20,7 +20,7 @@ contract DeployScript is Script, YnRWAxConfig {
         BaseLeverageKeeper.Config memory config =
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9900);
 
-        FlexStrategyLeverageKeeper keeper = new FlexStrategyLeverageKeeper(YN_ADMIN);
+        FlexStrategyLeverageKeeper keeper = new FlexStrategyLeverageKeeper(msg.sender);
         keeper.initialize(YN_ADMIN, config);
 
         vm.stopBroadcast();
