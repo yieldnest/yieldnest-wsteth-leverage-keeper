@@ -13,8 +13,6 @@ contract DeployScript is Script, YnRWAxConfig {
     function run() public {
         vm.startBroadcast();
 
-        address admin = msg.sender;
-
         StablecoinRateProvider rateProvider = new StablecoinRateProvider(USDC);
 
         LatestAnswerAdapter wstethOracle = new LatestAnswerAdapter(WSTETH_USD_ORACLE, 8);
@@ -23,7 +21,7 @@ contract DeployScript is Script, YnRWAxConfig {
             _buildConfig(rateProvider, AggregatorV3Interface(address(wstethOracle)), 9900);
 
         FlexStrategyLeverageKeeper keeper = new FlexStrategyLeverageKeeper(msg.sender);
-        keeper.initialize(admin, config);
+        keeper.initialize(YN_ADMIN, config);
 
         vm.stopBroadcast();
     }

@@ -1,0 +1,5 @@
+{
+  "StablecoinRateProvider": "0xeC90d3F01Ea53d4e99b1ee758F160521C2968c12",
+  "LatestAnswerAdapter": "0x537C8D5a25c5467A3A68Fc0ffDfC89eA9C309360",
+  "FlexStrategyLeverageKeeper": "0x6920C7c9a66EdEa563b1aEcb8CA8097f811CbFc5"
+}
